@@ -1,9 +1,11 @@
 package socs.network.node;
 
+import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.util.Scanner;
 
 
 public class Router {
@@ -50,6 +52,29 @@ public class Router {
    */
   private void processAttach(String processIP, short processPort,
                              String simulatedIP, short weight) {
+                              //find an available port
+                              int port_slot = -1;
+                              for (int i = 0; i < ports.length; i++){
+                                if (ports[i] == null){
+                                  port_slot = i;
+                                  break;
+                                }
+                              }
+                              if (port_slot == -1){ // no ports available
+                                // error out  
+                                System.err.println("All ports are full.");
+                                return;
+                              }
+                              // if port is created
+                              RouterDescription rd1 = new RouterDescription();
+                              rd1.processIPAddress = processIP;
+                              rd1.processPortNumber = processPort;
+                              rd1.simulatedIPAddress = simulatedIP;
+                              rd1.status = RouterStatus.INIT; // intitialize, theress not handshake
+                              Link newLink = new Link(rd, rd1);
+                              ports[port_slot] = newLink;
+                              System.out.println("Your connection is initiated");
+                              
 
   }
 
@@ -59,15 +84,34 @@ public class Router {
    * For example: when router2 tries to attach router1. Router1 can decide whether it will accept this request. 
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
-  private void requestHandler() {
-
+  private boolean requestHandler(SOSPFPacket hello) {
+    System.out.println("received HELLO from " + hello.srcIP + ";");
+    System.out.println("Do you accept this request? (Y/N)");
+    Scanner sc = new Scanner(System.in);
+    String answer = sc.nextLine();
+    while(answer != "Y" || answer != "N"){
+      System.out.println("Answer not accepted/invalid.");
+      System.out.println("Do you accept this request? (Y/N)");
+    }
+    if (answer == "Y"){
+      //create the lin in the port
+      // creat eoutcomign rd
+      RouterDescription rd2 = new RouterDescription();
+      rd2.processIPAddress = hello.dstIP;
+      rd2.simulatedIPAddress = hello.srcIP;
+      rd2.processPortNumber = hello.srcProcessPort;
+      rd2.status = RouterStatus.TWO_WAY; // accepted
+      ports[hello.srcProcessPort] = new Link(rd, rd2);
+      return true;
+    }
+    return false; // send rejection & handle it
   }
 
   /**
    * broadcast Hello to neighbors
    */
   private void processStart() {
-
+    
   }
 
   /**
