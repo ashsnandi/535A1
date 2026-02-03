@@ -4,7 +4,10 @@ import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.ObjectOutputStream;
+import java.net.Socket;
 import java.util.Scanner;
 
 
@@ -112,6 +115,46 @@ public class Router {
    */
   private void processStart() {
     
+    // Send Hello packet to all attached links
+    for (Link link : ports) {
+      if (link != null) {
+        sendProcessStartHello(link, link.router2);
+      }
+    }
+
+    // Configure router status
+
+    // Update own LSD
+
+    // Multicast LSA update packets to neighbors
+
+  }
+
+  private void sendProcessStartHello(Link link, RouterDescription nbr) {
+    SOSPFPacket ProcessStartHello = new SOSPFPacket();
+    ProcessStartHello.sospfType = 0; // HELLO
+
+    // inter-process addressing (real socket endpoints)
+    ProcessStartHello.srcProcessIP = rd.processIPAddress;
+    ProcessStartHello.srcProcessPort = rd.processPortNumber;
+
+    // simulated addressing (router IDs)
+    ProcessStartHello.srcIP = rd.simulatedIPAddress;
+    ProcessStartHello.dstIP = nbr.simulatedIPAddress;
+
+    // HELLO semantic: "I am <src simulated IP>"
+    ProcessStartHello.neighborID = rd.simulatedIPAddress;
+
+    sendPacket(ProcessStartHello, nbr);
+  }
+
+  private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
+    try (Socket s = new Socket(nbr.processIPAddress, nbr.processPortNumber);
+    ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream())) {
+      out.writeObject(pkt);
+    } catch (IOException e) {
+      System.err.println("Send failed to " + nbr.simulatedIPAddress);
+    }
   }
 
   /**
