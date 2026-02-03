@@ -7,6 +7,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.ObjectOutputStream;
+import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.Scanner;
 
@@ -55,38 +56,29 @@ public class Router {
    */
   private void processAttach(String processIP, short processPort,
                              String simulatedIP, short weight) {
-    if (simulatedIP.equals(rd.simulatedIPAddress)) {
-      System.err.println("Cannot attach to self.");
-      return;
-    }
-
-    for (int i = 0; i < ports.length; i++) {
-      if (ports[i] != null && ports[i].router2.simulatedIPAddress.equals(simulatedIP)) {
-        System.err.println("Already attached to " + simulatedIP + " on port " + i + ".");
-        return;
-      }
-    }
-
-    int portSlot = -1;
-    for (int i = 0; i < ports.length; i++) {
-      if (ports[i] == null) {
-        portSlot = i;
-        break;
-      }
-    }
-    if (portSlot == -1) {
-      System.err.println("All ports are full.");
-      return;
-    }
-
-    RouterDescription remote = new RouterDescription();
-    remote.processIPAddress = processIP;
-    remote.processPortNumber = processPort;
-    remote.simulatedIPAddress = simulatedIP;
-    remote.status = RouterStatus.INIT;
-
-    ports[portSlot] = new Link(rd, remote);
-    System.out.println("Attached to " + simulatedIP + " on port " + portSlot + ".");
+                              //find an available port
+                              int port_slot = -1;
+                              for (int i = 0; i < ports.length; i++){
+                                if (ports[i] == null){
+                                  port_slot = i;
+                                  break;
+                                }
+                              }
+                              if (port_slot == -1){ // no ports available
+                                // error out  
+                                System.err.println("All ports are full.");
+                                return;
+                              }
+                              // if port is created
+                              RouterDescription rd1 = new RouterDescription();
+                              rd1.processIPAddress = processIP;
+                              rd1.processPortNumber = processPort;
+                              rd1.simulatedIPAddress = simulatedIP;
+                              rd1.status = RouterStatus.INIT; // intitialize, theress not handshake
+                              Link newLink = new Link(rd, rd1);
+                              ports[port_slot] = newLink;
+                              System.out.println("Your connection is initiated");
+                              
 
   }
 
@@ -101,30 +93,19 @@ public class Router {
     System.out.println("Do you accept this request? (Y/N)");
     Scanner sc = new Scanner(System.in);
     String answer = sc.nextLine();
-    while (!answer.equalsIgnoreCase("Y") && !answer.equalsIgnoreCase("N")) {
+    while(!answer.equals("Y") && !answer.equals("N")){
       System.out.println("Answer not accepted/invalid.");
       System.out.println("Do you accept this request? (Y/N)");
-      answer = sc.nextLine();
     }
-    if (answer.equalsIgnoreCase("Y")) {
-      int portSlot = -1;
-      for (int i = 0; i < ports.length; i++) {
-        if (ports[i] == null) {
-          portSlot = i;
-          break;
-        }
-      }
-      if (portSlot == -1) {
-        System.out.println("No available ports. Rejecting request.");
-        return false;
-      }
-
+    if (answer == "Y"){
+      //create the lin in the port
+      // creat eoutcomign rd
       RouterDescription rd2 = new RouterDescription();
-      rd2.processIPAddress = hello.srcProcessIP;
+      rd2.processIPAddress = hello.dstIP;
       rd2.simulatedIPAddress = hello.srcIP;
       rd2.processPortNumber = hello.srcProcessPort;
-      rd2.status = RouterStatus.TWO_WAY;
-      ports[portSlot] = new Link(rd, rd2);
+      rd2.status = RouterStatus.TWO_WAY; // accepted
+      ports[hello.srcProcessPort] = new Link(rd, rd2);
       return true;
     }
     return false; // send rejection & handle it
@@ -138,6 +119,7 @@ public class Router {
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
+        // This is fine since by convention, router2 is the neighbor
         sendProcessStartHello(link, link.router2);
       }
     }
@@ -150,6 +132,7 @@ public class Router {
 
   }
 
+  // Helper function to create and send a HELLO packet on process start
   private void sendProcessStartHello(Link link, RouterDescription nbr) {
     SOSPFPacket ProcessStartHello = new SOSPFPacket();
     ProcessStartHello.sospfType = 0; // HELLO
@@ -164,18 +147,24 @@ public class Router {
 
     // HELLO semantic: "I am <src simulated IP>"
     ProcessStartHello.neighborID = rd.simulatedIPAddress;
+    // Do we need to include router ID as well
 
     sendPacket(ProcessStartHello, nbr);
   }
 
+  // Helper function to send the packet to the neighbor as an Object
   private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
-    try (Socket s = new Socket(nbr.processIPAddress, nbr.processPortNumber);
-    ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream())) {
+    try (Socket socket = new Socket(nbr.processIPAddress, nbr.processPortNumber);
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+
       out.writeObject(pkt);
+      out.flush();
+
     } catch (IOException e) {
-      System.err.println("Send failed to " + nbr.simulatedIPAddress);
+      e.printStackTrace();
     }
   }
+
 
   /**
    * attach the link to the remote router, which is identified by the given simulated ip;
@@ -194,7 +183,7 @@ public class Router {
    */
   private void processNeighbors() {
 
-  } 
+  }
 
   /**
    * disconnect with all neighbors and quit the program
