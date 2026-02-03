@@ -7,7 +7,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.ObjectOutputStream;
-import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.Scanner;
 
@@ -125,6 +124,8 @@ public class Router {
     }
 
     // Configure router status
+    // Not quite sure what to put here as I was under the impression that 
+    // requestHandler would set the status to INIT and TWO_WAY accordingly
 
     // Update own LSD
 
@@ -155,12 +156,12 @@ public class Router {
   // Helper function to send the packet to the neighbor as an Object
   private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
     try (Socket socket = new Socket(nbr.processIPAddress, nbr.processPortNumber);
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
-
-      out.writeObject(pkt);
-      out.flush();
-
-    } catch (IOException e) {
+      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+        // Send the packet object
+        out.writeObject(pkt);
+        out.flush();
+      } 
+    catch (IOException e) {
       e.printStackTrace();
     }
   }
