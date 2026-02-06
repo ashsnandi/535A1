@@ -319,7 +319,7 @@ public class Router {
    * disconnect with all neighbors and quit the program
    */
   private void processQuit() {
-    networkLayer.stop();
+    networkLayer.stop(); // stop the main router
   }
 
   /**
@@ -424,6 +424,11 @@ public class Router {
     try {
       InputStreamReader isReader = new InputStreamReader(System.in);
       BufferedReader br = new BufferedReader(isReader);
+      System.out.println("========================================");
+      System.out.println("Process IP : " + rd.processIPAddress);
+      System.out.println("Process Port : " + rd.processPortNumber);
+      System.out.println("Simulated IP : " + rd.simulatedIPAddress);
+      System.out.println("========================================");
       System.out.print(">> ");
       String command = br.readLine();
       while (true) {
