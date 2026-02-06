@@ -6,6 +6,7 @@ import socs.network.util.Configuration;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.util.Scanner;
@@ -16,13 +17,32 @@ public class Router {
   protected LinkStateDatabase lsd;
 
   RouterDescription rd = new RouterDescription();
+  private final NetworkLayer networkLayer; // new class - for threading
+  private static final int DEFAULT_LINK_WEIGHT = 1;
 
   //assuming that all routers are with 4 ports
   Link[] ports = new Link[4];
 
   public Router(Configuration config) {
     rd.simulatedIPAddress = config.getString("socs.network.router.ip");
+    rd.processIPAddress = "127.0.0.1";
+    try {
+      rd.processIPAddress = config.getString("socs.network.router.processIP");
+    } catch (Exception ignored) {
+    }
+
+    rd.processPortNumber = 0;
+    try {
+      rd.processPortNumber = config.getShort("socs.network.router.port");
+    } catch (Exception ignored) {
+    }
     lsd = new LinkStateDatabase(rd);
+    networkLayer = new NetworkLayer(this);
+    try {
+      networkLayer.start();
+    } catch (IOException e) {
+      System.err.println("Failed to start network listener: " + e.getMessage());
+    }
   }
 
   /**
@@ -33,7 +53,12 @@ public class Router {
    * @param destinationIP the ip adderss of the destination simulated router
    */
   private void processDetect(String destinationIP) {
-
+    String path = lsd.getShortestPath(destinationIP);
+    if (path == null) {
+      System.out.println("No path found");
+      return;
+    }
+    System.out.println(path);
   }
 
   /**
@@ -61,7 +86,7 @@ public class Router {
       if (ports[i] == null) {
         port_slot = i;
         break;
-      }
+      } // find an open oprt
     }
     if (port_slot == -1) {
       System.err.println("All ports are full.");
@@ -69,7 +94,7 @@ public class Router {
     }
 
     try {
-      Socket socket = new Socket(processIP, processPort);
+      Socket socket = new Socket(processIP, processPort); // create the outgoing socket
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
       java.io.ObjectInputStream in = new java.io.ObjectInputStream(socket.getInputStream());//open socket
       
@@ -95,7 +120,7 @@ public class Router {
         rd1.processPortNumber = processPort;
         rd1.simulatedIPAddress = simulatedIP;
         rd1.status = null; //someone else sets this to init i believe
-        Link newLink = new Link(rd, rd1);
+        Link newLink = new Link(rd, rd1, port_slot, weight);
         ports[port_slot] = newLink;
         System.out.println("successfully attached to " + simulatedIP);
       } else {
@@ -115,14 +140,30 @@ public class Router {
    * For example: when router2 tries to attach router1. Router1 can decide whether it will accept this request. 
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
-  private void requestHandler(Socket socket) {
+  void requestHandler(Socket socket) {
     try {
-      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+      out.flush();
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream()); 
       
+      SOSPFPacket packet = (SOSPFPacket) in.readObject();
+      if (packet.sospfType == 2) {
+        handleApplicationMessage(packet);
+        return;
+      }
+      if (packet.sospfType != 0) {
+        return;
+      }
+
       // Deserialize incoming HELLO packet
-      SOSPFPacket hello = (SOSPFPacket) in.readObject();
-      
+      SOSPFPacket hello = packet;
+
+      Link existingLink = findLinkBySimulatedIP(hello.srcIP);
+      if (existingLink != null) {
+        handleHelloForExistingLink(existingLink);
+        return;
+      }
+
       System.out.println("received HELLO from " + hello.srcIP + ";");
       System.out.println("Do you accept this request? (Y/N)");
       Scanner sc = new Scanner(System.in);
@@ -162,10 +203,7 @@ public class Router {
         rd2.processPortNumber = hello.srcProcessPort;
         rd2.status = null;
         
-        Link newLink = new Link(rd, rd2);
-        newLink.socket = socket;
-        newLink.out = out;
-        newLink.in = in;
+        Link newLink = new Link(rd, rd2, portSlot, DEFAULT_LINK_WEIGHT);
         
         synchronized (ports) {
           ports[portSlot] = newLink;
@@ -201,14 +239,15 @@ public class Router {
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
-        // This is fine since by convention, router2 is the neighbor
-        sendProcessStartHello(link, link.router2);
+        if (link.router2.status == null) {
+          link.router2.status = RouterStatus.INIT;
+          System.out.println("set " + link.router2.simulatedIPAddress + " state to INIT");
+        }
+        sendHelloToNeighbor(link.router2);
       }
     }
 
     // Configure router status
-    // Not quite sure what to put here as I was under the impression that 
-    // requestHandler would set the status to INIT and TWO_WAY accordingly
 
     // Update own LSD
 
@@ -217,34 +256,33 @@ public class Router {
   }
 
   // Helper function to create and send a HELLO packet on process start
-  private void sendProcessStartHello(Link link, RouterDescription nbr) {
-    SOSPFPacket ProcessStartHello = new SOSPFPacket();
-    ProcessStartHello.sospfType = 0; // HELLO
+  private void sendHelloToNeighbor(RouterDescription nbr) {
+    SOSPFPacket hello = new SOSPFPacket();
+    hello.sospfType = 0; // HELLO
 
     // inter-process addressing (real socket endpoints)
-    ProcessStartHello.srcProcessIP = rd.processIPAddress;
-    ProcessStartHello.srcProcessPort = rd.processPortNumber;
+    hello.srcProcessIP = rd.processIPAddress;
+    hello.srcProcessPort = rd.processPortNumber;
 
     // simulated addressing (router IDs)
-    ProcessStartHello.srcIP = rd.simulatedIPAddress;
-    ProcessStartHello.dstIP = nbr.simulatedIPAddress;
+    hello.srcIP = rd.simulatedIPAddress;
+    hello.dstIP = nbr.simulatedIPAddress;
 
     // HELLO semantic: "I am <src simulated IP>"
-    ProcessStartHello.neighborID = rd.simulatedIPAddress;
-    // Do we need to include router ID as well
+    hello.neighborID = rd.simulatedIPAddress;
 
-    sendPacket(ProcessStartHello, nbr);
+    sendPacket(hello, nbr);
   }
 
   // Helper function to send the packet to the neighbor as an Object
   private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
     try (Socket socket = new Socket(nbr.processIPAddress, nbr.processPortNumber);
-      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
-        // Send the packet object
-        out.writeObject(pkt);
-        out.flush();
-      } 
-    catch (IOException e) {
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+
+      out.writeObject(pkt);
+      out.flush();
+
+    } catch (IOException e) {
       e.printStackTrace();
     }
   }
@@ -266,14 +304,22 @@ public class Router {
    * output the neighbors of the routers
    */
   private void processNeighbors() {
-
+    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+    if (self == null) {
+      return;
+    }
+    for (socs.network.message.LinkDescription ld : self.links) {
+      if (!rd.simulatedIPAddress.equals(ld.linkID)) {
+        System.out.println(ld.linkID);
+      }
+    }
   }
 
   /**
    * disconnect with all neighbors and quit the program
    */
   private void processQuit() {
-
+    networkLayer.stop();
   }
 
   /**
@@ -315,7 +361,28 @@ public class Router {
    * @param message the message content to send
    */
   private void processSend(String destinationIP, String message) {
+    System.out.println("Sending message to " + destinationIP);
+    if (destinationIP.equals(rd.simulatedIPAddress)) {
+      System.out.println("Received message from " + rd.simulatedIPAddress + ":");
+      System.out.println(message);
+      return;
+    }
 
+    RouterDescription nextHop = getNextHop(destinationIP);
+    if (nextHop == null) {
+      System.out.println("No path found");
+      return;
+    }
+
+    SOSPFPacket pkt = new SOSPFPacket();
+    pkt.sospfType = 2;
+    pkt.srcProcessIP = rd.processIPAddress;
+    pkt.srcProcessPort = rd.processPortNumber;
+    pkt.srcIP = rd.simulatedIPAddress;
+    pkt.dstIP = destinationIP;
+    pkt.message = message;
+
+    sendPacket(pkt, nextHop);
   }
 
   /**
@@ -334,7 +401,23 @@ public class Router {
    * @param packet the received application message packet
    */
   private void handleApplicationMessage(socs.network.message.SOSPFPacket packet) {
+    if (packet.dstIP == null || packet.srcIP == null) {
+      return;
+    }
+    if (packet.dstIP.equals(rd.simulatedIPAddress)) {
+      System.out.println("Received message from " + packet.srcIP + ":");
+      System.out.println(packet.message);
+      return;
+    }
 
+    System.out.println("Forwarding packet from " + packet.srcIP + " to " + packet.dstIP);
+    RouterDescription nextHop = getNextHop(packet.dstIP);
+    if (nextHop == null) {
+      System.out.println("No path found");
+      return;
+    }
+
+    sendPacket(packet, nextHop);
   }
 
   public void terminal() {
@@ -393,6 +476,85 @@ public class Router {
     } catch (Exception e) {
       e.printStackTrace();
     }
+  }
+
+  short getProcessPort() {
+    return rd.processPortNumber;
+  }
+
+  void setProcessPort(short port) {
+    rd.processPortNumber = port;
+  }
+
+  private Link findLinkBySimulatedIP(String simulatedIP) {
+    if (simulatedIP == null) {
+      return null;
+    }
+    for (Link link : ports) {
+      if (link != null && link.router2 != null
+          && simulatedIP.equals(link.router2.simulatedIPAddress)) {
+        return link;
+      }
+    }
+    return null;
+  }
+
+  private void handleHelloForExistingLink(Link link) {
+    RouterStatus current = link.router2.status;
+    if (current == null) {
+      link.router2.status = RouterStatus.INIT;
+      System.out.println("set " + link.router2.simulatedIPAddress + " state to INIT");
+    } else if (current == RouterStatus.INIT) {
+      link.router2.status = RouterStatus.TWO_WAY;
+      System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
+      updateLocalLsaForLink(link);
+    }
+
+    sendHelloToNeighbor(link.router2);
+  }
+
+  private void updateLocalLsaForLink(Link link) {
+    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+    if (self == null) {
+      return;
+    }
+    boolean found = false;
+    for (socs.network.message.LinkDescription ld : self.links) {
+      if (link.router2.simulatedIPAddress.equals(ld.linkID)) {
+        ld.portNum = link.portNum;
+        ld.weight = link.weight;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      socs.network.message.LinkDescription ld = new socs.network.message.LinkDescription();
+      ld.linkID = link.router2.simulatedIPAddress;
+      ld.portNum = link.portNum;
+      ld.tosMetrics = 0;
+      ld.weight = link.weight;
+      self.links.add(ld);
+    }
+
+    self.lsaSeqNumber++;
+  }
+
+  private RouterDescription getNextHop(String destinationIP) {
+    String path = lsd.getShortestPath(destinationIP);
+    if (path == null) {
+      return null;
+    }
+    String[] hops = path.split(" -> ");
+    if (hops.length < 2) {
+      return null;
+    }
+    String nextHopIP = hops[1].trim();
+    Link link = findLinkBySimulatedIP(nextHopIP);
+    if (link == null) {
+      return null;
+    }
+    return link.router2;
   }
 
 }
