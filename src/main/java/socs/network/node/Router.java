@@ -24,18 +24,25 @@ public class Router {
   Link[] ports = new Link[4];
 
   public Router(Configuration config) {
+    // Initialize RouterDescription from configuration
     rd.simulatedIPAddress = config.getString("socs.network.router.ip");
+    // Default to localhost if not specified since we will be testing all routers on local machine
     rd.processIPAddress = "127.0.0.1";
+
+    // Override process IP if specified in config
     try {
       rd.processIPAddress = config.getString("socs.network.router.processIP");
     } catch (Exception ignored) {
     }
 
+    // Default port number to 0 (invalid) if not specified, will be set to config value when starting server
     rd.processPortNumber = 0;
     try {
       rd.processPortNumber = config.getShort("socs.network.router.port");
     } catch (Exception ignored) {
     }
+
+    // Initialize Link State Database and Network Layer
     lsd = new LinkStateDatabase(rd);
     networkLayer = new NetworkLayer(this);
     try {
@@ -78,25 +85,26 @@ public class Router {
    * <p/>
    * NOTE: this command should not trigger link database synchronization
    */
-  private void processAttach(String processIP, short processPort,
-                             String simulatedIP, short weight) {
-                              // figure out process port
+  private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {         
+    // figure out process port
     int port_slot = -1;
     for (int i = 0; i < ports.length; i++) {
       if (ports[i] == null) {
         port_slot = i;
         break;
-      } // find an open oprt
+      } // find an open port
     }
     if (port_slot == -1) {
       System.err.println("All ports are full.");
       return;
     }
 
+    // Establish the socket connection to the remote router and perform HELLO handshake
     try {
       Socket socket = new Socket(processIP, processPort); // create the outgoing socket
+      //socket.setSoTimeout(5000); // 5 seconds timeout for handshake response so no indefinite blocking
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-      java.io.ObjectInputStream in = new java.io.ObjectInputStream(socket.getInputStream());//open socket
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());//open socket
       
       // create hello packet
       SOSPFPacket hello = new SOSPFPacket();
@@ -111,6 +119,7 @@ public class Router {
       out.flush();
       
       // Block waiting for accept/reject response
+      // Handles on the same outgoing socket since the remote router will reply on the same socket connection
       SOSPFPacket response = (SOSPFPacket) in.readObject();
       
       if (response.sospfType == 0) { // Accepted (HELLO response)
@@ -124,7 +133,7 @@ public class Router {
         ports[port_slot] = newLink;
         System.out.println("successfully attached to " + simulatedIP);
       } else {
-        // rejected - clean sockeet.
+        // rejected - clean socket.
         socket.close();
         System.out.println("Connection rejected by " + simulatedIP);
       }
@@ -142,10 +151,12 @@ public class Router {
    */
   void requestHandler(Socket socket) {
     try {
+      // Open object streams for communication with the remote router
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
       out.flush();
       ObjectInputStream in = new ObjectInputStream(socket.getInputStream()); 
       
+      // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
       if (packet.sospfType == 2) {
         handleApplicationMessage(packet);
@@ -158,12 +169,14 @@ public class Router {
       // Deserialize incoming HELLO packet
       SOSPFPacket hello = packet;
 
+      // Check if the incoming HELLO is from an existing neighbor
       Link existingLink = findLinkBySimulatedIP(hello.srcIP);
       if (existingLink != null) {
         handleHelloForExistingLink(existingLink);
         return;
       }
 
+      // New neighbor - ask user for acceptance
       System.out.println("received HELLO from " + hello.srcIP + ";");
       System.out.println("Do you accept this request? (Y/N)");
       Scanner sc = new Scanner(System.in);
@@ -174,6 +187,7 @@ public class Router {
         answer = sc.nextLine();
       }
       
+      // Process user input for acceptance/rejection by sending appropriate response back to the remote router and updating local state if accepted
       if (answer.equalsIgnoreCase("Y")) {
         // Find available port
         int portSlot = -1;
@@ -186,6 +200,7 @@ public class Router {
           }
         }
         
+        // If no available port, reject the request
         if (portSlot == -1) {
           System.out.println("No available ports. Rejecting request.");
           SOSPFPacket reject = new SOSPFPacket();
@@ -201,7 +216,10 @@ public class Router {
         rd2.processIPAddress = hello.srcProcessIP;
         rd2.simulatedIPAddress = hello.srcIP;
         rd2.processPortNumber = hello.srcProcessPort;
-        rd2.status = null;
+        //rd2.status = null;
+        // Set neighbor status to INIT upon attachment
+        rd2.status = RouterStatus.INIT;
+        sendHelloToNeighbor(rd2);
         
         Link newLink = new Link(rd, rd2, portSlot, DEFAULT_LINK_WEIGHT);
         
@@ -247,7 +265,7 @@ public class Router {
       }
     }
 
-    // Configure router status
+    // Configure router status // currenlty done in sendHelloToNeighbor
 
     // Update own LSD
 
@@ -272,12 +290,20 @@ public class Router {
     hello.neighborID = rd.simulatedIPAddress;
 
     sendPacket(hello, nbr);
+
+    // Set neighbor status to TWOWAY
+    if (nbr.status == RouterStatus.INIT) {
+      nbr.status = RouterStatus.TWO_WAY;
+      System.out.println("set " + nbr.simulatedIPAddress + " state to TWO_WAY");
+      // Finally update local LSD for this neighbor and trigger synchronization by sending LSA update to all neighbors
+      updateLocalLsaForLink(findLinkBySimulatedIP(nbr.simulatedIPAddress));
+    }
   }
 
   // Helper function to send the packet to the neighbor as an Object
   private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
     try (Socket socket = new Socket(nbr.processIPAddress, nbr.processPortNumber);
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
 
       out.writeObject(pkt);
       out.flush();
@@ -504,6 +530,7 @@ public class Router {
     return null;
   }
 
+  // Helper function to handle incoming HELLO from an existing neighbor (neighbor that already has a link established with this router)
   private void handleHelloForExistingLink(Link link) {
     RouterStatus current = link.router2.status;
     if (current == null) {
@@ -518,11 +545,15 @@ public class Router {
     sendHelloToNeighbor(link.router2);
   }
 
+  // Helper function to update local LSA for a specific link and trigger synchronization by sending LSA update to all neighbors
   private void updateLocalLsaForLink(Link link) {
+    // Update local LSA for the link
     socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
     if (self == null) {
       return;
     }
+
+    // Check if the link already exists in the LSA, if so update it; if not, add a new LinkDescription for this link
     boolean found = false;
     for (socs.network.message.LinkDescription ld : self.links) {
       if (link.router2.simulatedIPAddress.equals(ld.linkID)) {
@@ -533,6 +564,7 @@ public class Router {
       }
     }
 
+    // If not found, add new LinkDescription for this link
     if (!found) {
       socs.network.message.LinkDescription ld = new socs.network.message.LinkDescription();
       ld.linkID = link.router2.simulatedIPAddress;
