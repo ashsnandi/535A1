@@ -100,11 +100,9 @@ public class Router {
     }
 
     // Establish the socket connection to the remote router and perform HELLO handshake
-    try {
-      Socket socket = new Socket(processIP, processPort); // create the outgoing socket
-      //socket.setSoTimeout(5000); // 5 seconds timeout for handshake response so no indefinite blocking
+    try (Socket socket = new Socket(processIP, processPort);
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());//open socket
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
       
       // create hello packet
       SOSPFPacket hello = new SOSPFPacket();
@@ -128,13 +126,11 @@ public class Router {
         rd1.processIPAddress = processIP;
         rd1.processPortNumber = processPort;
         rd1.simulatedIPAddress = simulatedIP;
-        rd1.status = null; //someone else sets this to init i believe
+        rd1.status = RouterStatus.INIT; // Set neighbor status to INIT upon attachment
         Link newLink = new Link(rd, rd1, port_slot, weight);
         ports[port_slot] = newLink;
         System.out.println("successfully attached to " + simulatedIP);
       } else {
-        // rejected - clean socket.
-        socket.close();
         System.out.println("Connection rejected by " + simulatedIP);
       }
       
@@ -150,16 +146,17 @@ public class Router {
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
   void requestHandler(Socket socket) {
-    try {
-      // Open object streams for communication with the remote router
-      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-      out.flush();
-      ObjectInputStream in = new ObjectInputStream(socket.getInputStream()); 
-      
+    try (Socket s = socket;
+      ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
+      ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
+
+      // Ensure we don't deadlock by flushing the output stream before waiting for input
+      out.flush(); 
+
       // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
       if (packet.sospfType == 2) {
-        handleApplicationMessage(packet);
+        handleApplicationMessage(packet, out);
         return;
       }
       if (packet.sospfType != 0) {
@@ -172,7 +169,8 @@ public class Router {
       // Check if the incoming HELLO is from an existing neighbor
       Link existingLink = findLinkBySimulatedIP(hello.srcIP);
       if (existingLink != null) {
-        handleHelloForExistingLink(existingLink);
+        handleHelloForExistingLink(existingLink, out);
+        // Send back HELLO response to acknowledge the existing neighbor  
         return;
       }
 
@@ -216,10 +214,8 @@ public class Router {
         rd2.processIPAddress = hello.srcProcessIP;
         rd2.simulatedIPAddress = hello.srcIP;
         rd2.processPortNumber = hello.srcProcessPort;
-        //rd2.status = null;
         // Set neighbor status to INIT upon attachment
         rd2.status = RouterStatus.INIT;
-        sendHelloToNeighbor(rd2);
         
         Link newLink = new Link(rd, rd2, portSlot, DEFAULT_LINK_WEIGHT);
         
@@ -257,11 +253,16 @@ public class Router {
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
-        if (link.router2.status == null) {
-          link.router2.status = RouterStatus.INIT;
-          System.out.println("set " + link.router2.simulatedIPAddress + " state to INIT");
+        if (link.router2.status != RouterStatus.TWO_WAY) {
+          link.router2.status = RouterStatus.TWO_WAY;
+          System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
         }
-        sendHelloToNeighbor(link.router2);
+        try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
+          ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+          sendHelloToNeighbor(link.router2, out);
+        } catch (Exception e) {
+          System.err.println("Failed to send HELLO to " + link.router2.simulatedIPAddress + ": " + e.getMessage());
+        }
       }
     }
 
@@ -274,7 +275,10 @@ public class Router {
   }
 
   // Helper function to create and send a HELLO packet on process start
-  private void sendHelloToNeighbor(RouterDescription nbr) {
+  private void sendHelloToNeighbor(RouterDescription nbr, ObjectOutputStream out) {
+      
+    // Create HELLO packet
+
     SOSPFPacket hello = new SOSPFPacket();
     hello.sospfType = 0; // HELLO
 
@@ -289,23 +293,25 @@ public class Router {
     // HELLO semantic: "I am <src simulated IP>"
     hello.neighborID = rd.simulatedIPAddress;
 
-    sendPacket(hello, nbr);
+    sendPacket(hello, nbr, out);
 
     // Set neighbor status to TWOWAY
     if (nbr.status == RouterStatus.INIT) {
       nbr.status = RouterStatus.TWO_WAY;
       System.out.println("set " + nbr.simulatedIPAddress + " state to TWO_WAY");
       // Finally update local LSD for this neighbor and trigger synchronization by sending LSA update to all neighbors
-      updateLocalLsaForLink(findLinkBySimulatedIP(nbr.simulatedIPAddress));
+      Link link = findLinkBySimulatedIP(nbr.simulatedIPAddress);
+      if (link != null) {
+        updateLocalLsaForLink(link);
+      }
     }
   }
 
   // Helper function to send the packet to the neighbor as an Object
-  private void sendPacket(SOSPFPacket pkt, RouterDescription nbr) {
-    try (Socket socket = new Socket(nbr.processIPAddress, nbr.processPortNumber);
-      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+  private void sendPacket(SOSPFPacket pakt, RouterDescription nbr, ObjectOutputStream out) {
+    try {
 
-      out.writeObject(pkt);
+      out.writeObject(pakt);
       out.flush();
 
     } catch (IOException e) {
@@ -408,7 +414,12 @@ public class Router {
     pkt.dstIP = destinationIP;
     pkt.message = message;
 
-    sendPacket(pkt, nextHop);
+    try (Socket socket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
+      ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+      sendPacket(pkt, nextHop, out);
+    } catch (IOException e) {
+      System.err.println("Failed to send application message: " + e.getMessage());
+    }
   }
 
   /**
@@ -426,7 +437,7 @@ public class Router {
    *
    * @param packet the received application message packet
    */
-  private void handleApplicationMessage(socs.network.message.SOSPFPacket packet) {
+  private void handleApplicationMessage(socs.network.message.SOSPFPacket packet, ObjectOutputStream out) {
     if (packet.dstIP == null || packet.srcIP == null) {
       return;
     }
@@ -443,7 +454,13 @@ public class Router {
       return;
     }
 
-    sendPacket(packet, nextHop);
+    // Open a new socket to the next hop for forwarding (not the incoming socket)
+    try (Socket fwdSocket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
+      ObjectOutputStream fwdOut = new ObjectOutputStream(fwdSocket.getOutputStream())) {
+      sendPacket(packet, nextHop, fwdOut);
+    } catch (IOException e) {
+      System.err.println("Failed to forward message: " + e.getMessage());
+    }
   }
 
   public void terminal() {
@@ -531,18 +548,20 @@ public class Router {
   }
 
   // Helper function to handle incoming HELLO from an existing neighbor (neighbor that already has a link established with this router)
-  private void handleHelloForExistingLink(Link link) {
+  private void handleHelloForExistingLink(Link link, ObjectOutputStream out) {
     RouterStatus current = link.router2.status;
     if (current == null) {
-      link.router2.status = RouterStatus.INIT;
-      System.out.println("set " + link.router2.simulatedIPAddress + " state to INIT");
-    } else if (current == RouterStatus.INIT) {
+      System.out.println("Received HELLO from existing neighbor " + link.router2.simulatedIPAddress + " with null status. Something is wrong.");
+      return;
+    }
+    if (current != RouterStatus.TWO_WAY) {
       link.router2.status = RouterStatus.TWO_WAY;
       System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
       updateLocalLsaForLink(link);
+      sendHelloToNeighbor(link.router2, out);
+    } else {
+      System.out.println("Received HELLO from existing neighbor " + link.router2.simulatedIPAddress + " with TWO_WAY status. No state change.");
     }
-
-    sendHelloToNeighbor(link.router2);
   }
 
   // Helper function to update local LSA for a specific link and trigger synchronization by sending LSA update to all neighbors
