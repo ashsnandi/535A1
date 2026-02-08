@@ -9,7 +9,8 @@ import java.io.InputStreamReader;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
-import java.util.Scanner;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 
 
 public class Router {
@@ -22,6 +23,39 @@ public class Router {
 
   //assuming that all routers are with 4 ports
   Link[] ports = new Link[4];
+
+  // deadlock fix -- A single BufferedReader wraps System.in. Only the main terminal
+  // thread should call readLine() on this because if a background thread also reads from
+  // System.in, the two threads race and steal each other's input.
+  private BufferedReader stdinReader = new BufferedReader(new InputStreamReader(System.in));
+
+  // deadlock fix -- When a background requestHandler thread receives an attach HELLO
+  // from a new neighbor, it cannot prompt Y/N itself (stdin race). Instead it
+  // enqueues a PendingRequest here and blocks. The main terminal thread polls this
+  // queue, prompts Y/N safely, and signals the result back via the latch.
+  // The latch is a blocking synchronization primitive 
+  // This prevents a race condition where multiple threads would try to read from System.in simultaneously,
+  // which would cause input theft and deadlock.
+  private ConcurrentLinkedQueue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
+
+  // Holds a pending attach request so the main thread can prompt Y/N while the socket stays open
+  private static class PendingRequest {
+    // declaring as final because these fields are set once at construction and never modified afterwards
+    final SOSPFPacket hello;
+    final Socket socket;
+    final ObjectOutputStream out;
+    // The 'accepted' field is set by the main thread after prompting Y/N, and read by the background thread to decide whether to accept or reject the attach request
+    boolean accepted;
+    // The latch starts at 1, meaning the background thread will block on latch.await() until the main thread calls latch.countDown() after setting 'accepted'
+    // So basically the user decides
+    final CountDownLatch latch = new CountDownLatch(1); 
+
+    PendingRequest(SOSPFPacket hello, Socket socket, ObjectOutputStream out) {
+      this.hello = hello;
+      this.socket = socket;
+      this.out = out;
+    }
+  }
 
   public Router(Configuration config) {
     // Initialize RouterDescription from configuration
@@ -100,9 +134,10 @@ public class Router {
     }
 
     // Establish the socket connection to the remote router and perform HELLO handshake
-    try (Socket socket = new Socket(processIP, processPort);
+    try (Socket socket = new Socket(processIP, processPort)) {
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-      ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
+      out.flush(); // flush OOS header to avoid deadlock
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
       
       // create hello packet
       SOSPFPacket hello = new SOSPFPacket();
@@ -146,12 +181,11 @@ public class Router {
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
   void requestHandler(Socket socket) {
-    try (Socket s = socket;
+    try (Socket s = socket) {
+      // Creating ObjectOutputStream before ObjectInputStream to avoid deadlock (both sides waiting for OOS header)
       ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
-      ObjectInputStream in = new ObjectInputStream(s.getInputStream())) {
-
-      // Ensure we don't deadlock by flushing the output stream before waiting for input
-      out.flush(); 
+      out.flush(); // flush OOS header BEFORE creating OIS to avoid deadlock
+      ObjectInputStream in = new ObjectInputStream(s.getInputStream());
 
       // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
@@ -174,19 +208,16 @@ public class Router {
         return;
       }
 
-      // New neighbor - ask user for acceptance
+      // New neighbor will queue the request for the main terminal thread to prompt Y/N
+      // We keep the socket open; the background thread blocks until the main thread decides
+      PendingRequest pr = new PendingRequest(hello, s, out);
+      pendingRequests.add(pr);
       System.out.println("received HELLO from " + hello.srcIP + ";");
-      System.out.println("Do you accept this request? (Y/N)");
-      Scanner sc = new Scanner(System.in);
-      String answer = sc.nextLine();
-      while (!answer.equalsIgnoreCase("Y") && !answer.equalsIgnoreCase("N")) {
-        System.out.println("Answer not accepted/invalid.");
-        System.out.println("Do you accept this request? (Y/N)");
-        answer = sc.nextLine();
-      }
-      
-      // Process user input for acceptance/rejection by sending appropriate response back to the remote router and updating local state if accepted
-      if (answer.equalsIgnoreCase("Y")) {
+
+      // We block this thread until the terminal thread processes the Y/N
+      pr.latch.await();
+
+      if (pr.accepted) {
         // Find available port
         int portSlot = -1;
         synchronized (ports) {
@@ -197,32 +228,29 @@ public class Router {
             }
           }
         }
-        
-        // If no available port, reject the request
+
         if (portSlot == -1) {
           System.out.println("No available ports. Rejecting request.");
           SOSPFPacket reject = new SOSPFPacket();
           reject.sospfType = -1;
           out.writeObject(reject);
           out.flush();
-          socket.close();
           return;
         }
-        
-        // Create Link and store socket for future communication
+
+        // Create Link for the new neighbor
         RouterDescription rd2 = new RouterDescription();
         rd2.processIPAddress = hello.srcProcessIP;
         rd2.simulatedIPAddress = hello.srcIP;
         rd2.processPortNumber = hello.srcProcessPort;
-        // Set neighbor status to INIT upon attachment
         rd2.status = RouterStatus.INIT;
-        
+
         Link newLink = new Link(rd, rd2, portSlot, DEFAULT_LINK_WEIGHT);
-        
+
         synchronized (ports) {
           ports[portSlot] = newLink;
         }
-        
+
         // Send acceptance
         SOSPFPacket accept = new SOSPFPacket();
         accept.sospfType = 0;
@@ -232,15 +260,16 @@ public class Router {
         accept.dstIP = hello.srcIP;
         out.writeObject(accept);
         out.flush();
+        System.out.println("accepted attach request from " + hello.srcIP);
       } else {
         // Send rejection
         SOSPFPacket reject = new SOSPFPacket();
         reject.sospfType = -1;
         out.writeObject(reject);
         out.flush();
-        socket.close();
+        System.out.println("rejected attach request from " + hello.srcIP);
       }
-    } catch (IOException | ClassNotFoundException e) {
+    } catch (IOException | ClassNotFoundException | InterruptedException e) {
       System.err.println("Error handling request: " + e.getMessage());
       try {
         socket.close();
@@ -248,6 +277,7 @@ public class Router {
       }
     }
   }
+
   private void processStart() {
     
     // Send Hello packet to all attached links
@@ -256,6 +286,7 @@ public class Router {
         if (link.router2.status != RouterStatus.TWO_WAY) {
           link.router2.status = RouterStatus.TWO_WAY;
           System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
+          updateLocalLsaForLink(link);
         }
         try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
           ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
@@ -393,19 +424,23 @@ public class Router {
    * @param message the message content to send
    */
   private void processSend(String destinationIP, String message) {
+    // Print the sending message log
     System.out.println("Sending message to " + destinationIP);
+    // If the destination is this router itself, print the received message log and return
     if (destinationIP.equals(rd.simulatedIPAddress)) {
       System.out.println("Received message from " + rd.simulatedIPAddress + ":");
       System.out.println(message);
       return;
     }
 
+    // Find the next hop on the shortest path to the destination using the Link State Database
     RouterDescription nextHop = getNextHop(destinationIP);
     if (nextHop == null) {
       System.out.println("No path found");
       return;
     }
 
+    // Create an application message packet to send to the next hop
     SOSPFPacket pkt = new SOSPFPacket();
     pkt.sospfType = 2;
     pkt.srcProcessIP = rd.processIPAddress;
@@ -414,6 +449,7 @@ public class Router {
     pkt.dstIP = destinationIP;
     pkt.message = message;
 
+    // Open a new socket to the next hop for sending (not the incoming socket)
     try (Socket socket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
       sendPacket(pkt, nextHop, out);
@@ -465,64 +501,94 @@ public class Router {
 
   public void terminal() {
     try {
-      InputStreamReader isReader = new InputStreamReader(System.in);
-      BufferedReader br = new BufferedReader(isReader);
+      // Use the dedicated stdinReader for the terminal thread to avoid conflicts with background threads that also need to read from System.in (e.g. for attach requests)
+      BufferedReader br = stdinReader;
       System.out.println("========================================");
       System.out.println("Process IP : " + rd.processIPAddress);
       System.out.println("Process Port : " + rd.processPortNumber);
       System.out.println("Simulated IP : " + rd.simulatedIPAddress);
       System.out.println("========================================");
-      System.out.print(">> ");
-      String command = br.readLine();
+
       while (true) {
-        if (command.startsWith("detect ")) {
-          String[] cmdLine = command.split(" ");
-          processDetect(cmdLine[1]);
-        } else if (command.startsWith("disconnect ")) {
-          String[] cmdLine = command.split(" ");
-          processDisconnect(Short.parseShort(cmdLine[1]));
-        } else if (command.startsWith("quit")) {
-          processQuit();
-        } else if (command.startsWith("attach ")) {
-          String[] cmdLine = command.split(" ");
-          processAttach(cmdLine[1], Short.parseShort(cmdLine[2]),
-                  cmdLine[3], Short.parseShort(cmdLine[4]));
-        } else if (command.equals("start")) {
-          processStart();
-        } else if (command.equals("connect ")) {
-          String[] cmdLine = command.split(" ");
-          processConnect(cmdLine[1], Short.parseShort(cmdLine[2]),
-                  cmdLine[3], Short.parseShort(cmdLine[4]));
-        } else if (command.equals("neighbors")) {
-          //output neighbors
-          processNeighbors();
-        } else if (command.startsWith("send ")) {
-          //send [Destination IP] [Message]
-          String[] cmdLine = command.split(" ", 3);
-          if (cmdLine.length >= 3) {
-            processSend(cmdLine[1], cmdLine[2]);
-          } else {
-            System.out.println("Usage: send [Destination IP] [Message]");
-          }
-        } else if (command.startsWith("update ")) {
-          //update [port_number] [new_weight]
-          String[] cmdLine = command.split(" ");
-          if (cmdLine.length >= 3) {
-            processUpdate(Short.parseShort(cmdLine[1]), Short.parseShort(cmdLine[2]));
-          } else {
-            System.out.println("Usage: update [port_number] [new_weight]");
+        // Poll: check for pending attach requests OR user input
+        processPendingRequests(br);
+
+        if (br.ready()) {
+          // User input ready — read the command and process it
+          String command = br.readLine();
+          if (command == null) break;
+          if (command.startsWith("detect ")) {
+            String[] cmdLine = command.split(" ");
+            processDetect(cmdLine[1]);
+          } else if (command.startsWith("disconnect ")) {
+            String[] cmdLine = command.split(" ");
+            processDisconnect(Short.parseShort(cmdLine[1]));
+          } else if (command.startsWith("quit")) {
+            processQuit();
+            break;
+          } else if (command.startsWith("attach ")) {
+            String[] cmdLine = command.split(" ");
+            processAttach(cmdLine[1], Short.parseShort(cmdLine[2]),
+                    cmdLine[3], Short.parseShort(cmdLine[4]));
+          } else if (command.equals("start")) {
+            processStart();
+          } else if (command.startsWith("connect ")) {
+            String[] cmdLine = command.split(" ");
+            processConnect(cmdLine[1], Short.parseShort(cmdLine[2]),
+                    cmdLine[3], Short.parseShort(cmdLine[4]));
+          } else if (command.equals("neighbors")) {
+            processNeighbors();
+          } else if (command.startsWith("send ")) {
+            String[] cmdLine = command.split(" ", 3);
+            if (cmdLine.length >= 3) {
+              processSend(cmdLine[1], cmdLine[2]);
+            } else {
+              System.out.println("Usage: send [Destination IP] [Message]");
+            }
+          } else if (command.startsWith("update ")) {
+            String[] cmdLine = command.split(" ");
+            if (cmdLine.length >= 3) {
+              processUpdate(Short.parseShort(cmdLine[1]), Short.parseShort(cmdLine[2]));
+            } else {
+              System.out.println("Usage: update [port_number] [new_weight]");
+            }
           }
         } else {
-          //invalid command
-          break;
+          // No input ready — sleep briefly to avoid busy-waiting
+          // console environment, stdin isn’t easily multiplexed with other events, so polling is a simple solution. 
+          Thread.sleep(100);
         }
-        System.out.print(">> ");
-        command = br.readLine();
       }
-      isReader.close();
-      br.close();
     } catch (Exception e) {
       e.printStackTrace();
+    }
+  }
+
+  // Drain pending attach requests, prompting Y/N for each on the main thread
+  private void processPendingRequests(BufferedReader br) {
+    PendingRequest pr;
+    // We process pending requests sequentially on the main thread to safely prompt Y/N without racing on System.in. 
+    // Each request will block the background thread until the main thread processes it and signals via the latch.
+    while ((pr = pendingRequests.poll()) != null) {
+      try {
+        System.out.println("Do you accept this request from " + pr.hello.srcIP + "? (Y/N)");
+        // br.readline() is a blocking call
+        String answer = br.readLine();
+        while (answer != null && !(answer.equalsIgnoreCase("Y") || answer.equalsIgnoreCase("N"))) {
+          System.out.println("Answer not accepted/invalid.");
+          System.out.println("Do you accept this request? (Y/N)");
+          answer = br.readLine();
+        }
+        // Check the user's answer and set the 'accepted' field of the PendingRequest accordingly, which will be read by the background thread after latch is released
+        if (answer != null && answer.equalsIgnoreCase("Y")) {
+          pr.accepted = true;
+        } else {
+          pr.accepted = false;
+        }
+      } catch (IOException e) {
+        pr.accepted = false;
+      }
+      pr.latch.countDown(); // unblock the background thread by counting down from 1 to 0, allowing it to proceed
     }
   }
 
@@ -547,7 +613,7 @@ public class Router {
     return null;
   }
 
-  // Helper function to handle incoming HELLO from an existing neighbor (neighbor that already has a link established with this router)
+  // Handle incoming HELLO from an existing neighbor
   private void handleHelloForExistingLink(Link link, ObjectOutputStream out) {
     RouterStatus current = link.router2.status;
     if (current == null) {
@@ -558,9 +624,13 @@ public class Router {
       link.router2.status = RouterStatus.TWO_WAY;
       System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
       updateLocalLsaForLink(link);
-      sendHelloToNeighbor(link.router2, out);
-    } else {
-      System.out.println("Received HELLO from existing neighbor " + link.router2.simulatedIPAddress + " with TWO_WAY status. No state change.");
+      // Reply on a NEW socket — the incoming socket may already be closed by the sender
+      try (Socket replySocket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
+        ObjectOutputStream replyOut = new ObjectOutputStream(replySocket.getOutputStream())) {
+        sendHelloToNeighbor(link.router2, replyOut);
+      } catch (IOException e) {
+        System.err.println("Failed to send HELLO reply to " + link.router2.simulatedIPAddress + ": " + e.getMessage());
+      }
     }
   }
 
