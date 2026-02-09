@@ -19,7 +19,7 @@ public class Router {
 
   RouterDescription rd = new RouterDescription();
   private final NetworkLayer networkLayer; // new class - for threading
-  private static final int DEFAULT_LINK_WEIGHT = 1;
+  private final int defaultLinkWeight = 1;
 
   //assuming that all routers are with 4 ports
   Link[] ports = new Link[4];
@@ -244,7 +244,7 @@ public class Router {
         rd2.processPortNumber = hello.srcProcessPort;
         rd2.status = RouterStatus.INIT;
 
-        Link newLink = new Link(rd, rd2, portSlot, DEFAULT_LINK_WEIGHT);
+        Link newLink = new Link(rd, rd2, portSlot, defaultLinkWeight);
 
         synchronized (ports) {
           ports[portSlot] = newLink;
