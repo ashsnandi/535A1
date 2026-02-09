@@ -161,6 +161,7 @@ public class Router {
         rd1.processPortNumber = processPort;
         rd1.simulatedIPAddress = simulatedIP;
         rd1.status = RouterStatus.INIT; // Set neighbor status to INIT upon attachment
+        System.out.println("set " + simulatedIP + " STATE to INIT;");
         Link newLink = new Link(rd, rd1, port_slot, weight);
         ports[port_slot] = newLink;
         System.out.println("successfully attached to " + simulatedIP);
@@ -198,6 +199,7 @@ public class Router {
 
       // Deserialize incoming HELLO packet
       SOSPFPacket hello = packet;
+      System.out.println("received HELLO from " + hello.srcIP + ";");
 
       // Check if the incoming HELLO is from an existing neighbor
       Link existingLink = findLinkBySimulatedIP(hello.srcIP);
@@ -211,7 +213,6 @@ public class Router {
       // We keep the socket open; the background thread blocks until the main thread decides
       PendingRequest pRequest = new PendingRequest(hello, s, out);
       pRequests.add(pRequest);
-      System.out.println("received HELLO from " + hello.srcIP + ";");
 
       // We then block this thread until the terminal thread processes the Y/N
       pRequest.cdlatch.await();
@@ -243,6 +244,7 @@ public class Router {
         rd2.simulatedIPAddress = hello.srcIP;
         rd2.processPortNumber = hello.srcProcessPort;
         rd2.status = RouterStatus.INIT;
+        System.out.println("set " + hello.srcIP + " STATE to INIT;");
 
         Link newLink = new Link(rd, rd2, portSlot, defaultLinkWeight);
 
@@ -282,14 +284,33 @@ public class Router {
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
-        if (link.router2.status != RouterStatus.TWO_WAY) {
-          link.router2.status = RouterStatus.TWO_WAY;
-          System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
-          updateLocalLsaForLink(link);
-        }
-        try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
-          ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
-          sendHelloToNeighbor(link.router2, out);
+        try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber)) {
+          ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+          out.flush(); // flush OOS header to avoid deadlock
+          ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+          
+          // Send HELLO packet
+          SOSPFPacket hello = new SOSPFPacket();
+          hello.sospfType = 0; // HELLO
+          hello.srcProcessIP = rd.processIPAddress;
+          hello.srcProcessPort = rd.processPortNumber;
+          hello.srcIP = rd.simulatedIPAddress;
+          hello.dstIP = link.router2.simulatedIPAddress;
+          hello.neighborID = rd.simulatedIPAddress;
+          
+          out.writeObject(hello);
+          out.flush();
+          
+          // Wait for HELLO response
+          SOSPFPacket response = (SOSPFPacket) in.readObject();
+          
+          if (response.sospfType == 0) { // HELLO response received
+            if (link.router2.status != RouterStatus.TWO_WAY) {
+              link.router2.status = RouterStatus.TWO_WAY;
+              System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
+              updateLocalLsaForLink(link);
+            }
+          }
         } catch (Exception e) {
           System.err.println("Failed to send HELLO to " + link.router2.simulatedIPAddress + ": " + e.getMessage());
         }
@@ -516,27 +537,60 @@ public class Router {
           // User input ready, read the command and process it
           String command = bReader.readLine();
           if (command == null) break;
-          if (command.startsWith("detect ")) {
-            String[] cmdLine = command.split(" ");
-            processDetect(cmdLine[1]);
-          } else if (command.startsWith("disconnect ")) {
-            String[] cmdLine = command.split(" ");
-            processDisconnect(Short.parseShort(cmdLine[1]));
-          } else if (command.startsWith("quit")) {
+          command = command.trim();
+          if (command.isEmpty()) {
+            continue;
+          }
+
+          if (command.equals("quit")) {
             processQuit();
             break;
-          } else if (command.startsWith("attach ")) {
-            String[] cmdLine = command.split(" ");
-            processAttach(cmdLine[1], Short.parseShort(cmdLine[2]),
-                    cmdLine[3], Short.parseShort(cmdLine[4]));
           } else if (command.equals("start")) {
             processStart();
-          } else if (command.startsWith("connect ")) {
-            String[] cmdLine = command.split(" ");
-            processConnect(cmdLine[1], Short.parseShort(cmdLine[2]),
-                    cmdLine[3], Short.parseShort(cmdLine[4]));
           } else if (command.equals("neighbors")) {
             processNeighbors();
+          } else if (command.startsWith("detect ")) {
+            String[] cmdLine = command.split("\\s+");
+            if (cmdLine.length != 2) {
+              System.out.println("Usage: detect [Destination IP]");
+              continue;
+            }
+            processDetect(cmdLine[1]);
+          } else if (command.startsWith("disconnect ")) {
+            String[] cmdLine = command.split("\\s+");
+            if (cmdLine.length != 2) {
+              System.out.println("Usage: disconnect [port_number]");
+              continue;
+            }
+            Short port = parseShortArg(cmdLine[1], "port_number");
+            if (port == null) {
+              continue;
+            }
+            processDisconnect(port);
+          } else if (command.startsWith("attach ")) {
+            String[] cmdLine = command.split("\\s+");
+            if (cmdLine.length != 5) {
+              System.out.println("Usage: attach [Process IP] [Process Port] [Simulated IP] [Weight]");
+              continue;
+            }
+            Short processPort = parseShortArg(cmdLine[2], "process_port");
+            Short weight = parseShortArg(cmdLine[4], "weight");
+            if (processPort == null || weight == null) {
+              continue;
+            }
+            processAttach(cmdLine[1], processPort, cmdLine[3], weight);
+          } else if (command.startsWith("connect ")) {
+            String[] cmdLine = command.split("\\s+");
+            if (cmdLine.length != 5) {
+              System.out.println("Usage: connect [Process IP] [Process Port] [Simulated IP] [Weight]");
+              continue;
+            }
+            Short processPort = parseShortArg(cmdLine[2], "process_port");
+            Short weight = parseShortArg(cmdLine[4], "weight");
+            if (processPort == null || weight == null) {
+              continue;
+            }
+            processConnect(cmdLine[1], processPort, cmdLine[3], weight);
           } else if (command.startsWith("send ")) {
             String[] cmdLine = command.split(" ", 3);
             if (cmdLine.length >= 3) {
@@ -545,12 +599,20 @@ public class Router {
               System.out.println("Usage: send [Destination IP] [Message]");
             }
           } else if (command.startsWith("update ")) {
-            String[] cmdLine = command.split(" ");
-            if (cmdLine.length >= 3) {
-              processUpdate(Short.parseShort(cmdLine[1]), Short.parseShort(cmdLine[2]));
-            } else {
+            String[] cmdLine = command.split("\\s+");
+            if (cmdLine.length != 3) {
               System.out.println("Usage: update [port_number] [new_weight]");
+              continue;
             }
+            Short port = parseShortArg(cmdLine[1], "port_number");
+            Short newWeight = parseShortArg(cmdLine[2], "new_weight");
+            if (port == null || newWeight == null) {
+              continue;
+            }
+            processUpdate(port, newWeight);
+          } else {
+            System.out.println("Unknown command: " + command);
+            System.out.println("Try: detect, disconnect, attach, connect, start, neighbors, send, update, quit");
           }
         } else {
           // No input ready — sleep briefly to avoid busy-waiting
@@ -560,6 +622,15 @@ public class Router {
       }
     } catch (Exception e) {
       e.printStackTrace();
+    }
+  }
+
+  private Short parseShortArg(String value, String name) {
+    try {
+      return Short.parseShort(value);
+    } catch (NumberFormatException e) {
+      System.out.println("Invalid " + name + " (expected short): " + value);
+      return null;
     }
   }
 
@@ -628,13 +699,22 @@ public class Router {
       link.router2.status = RouterStatus.TWO_WAY;
       System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
       updateLocalLsaForLink(link);
-      // Reply on a NEW socket — the incoming socket may already be closed by the sender
-      try (Socket replySocket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
-        ObjectOutputStream replyOut = new ObjectOutputStream(replySocket.getOutputStream())) {
-        sendHelloToNeighbor(link.router2, replyOut);
-      } catch (IOException e) {
-        System.err.println("Failed to send HELLO reply to " + link.router2.simulatedIPAddress + ": " + e.getMessage());
-      }
+    }
+    
+    // Send HELLO response on the SAME socket
+    try {
+      SOSPFPacket helloResponse = new SOSPFPacket();
+      helloResponse.sospfType = 0; // HELLO
+      helloResponse.srcProcessIP = rd.processIPAddress;
+      helloResponse.srcProcessPort = rd.processPortNumber;
+      helloResponse.srcIP = rd.simulatedIPAddress;
+      helloResponse.dstIP = link.router2.simulatedIPAddress;
+      helloResponse.neighborID = rd.simulatedIPAddress;
+      
+      out.writeObject(helloResponse);
+      out.flush();
+    } catch (IOException e) {
+      System.err.println("Failed to send HELLO reply to " + link.router2.simulatedIPAddress + ": " + e.getMessage());
     }
   }
 
