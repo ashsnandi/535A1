@@ -27,7 +27,7 @@ public class Router {
   // deadlock fix -- A single BufferedReader wraps System.in. Only the main terminal
   // thread should call readLine() on this because if a background thread also reads from
   // System.in, the two threads race and steal each other's input.
-  private BufferedReader stdinReader = new BufferedReader(new InputStreamReader(System.in));
+  private BufferedReader inputReader = new BufferedReader(new InputStreamReader(System.in));
 
   // deadlock fix -- When a background requestHandler thread receives an attach HELLO
   // from a new neighbor, it cannot prompt Y/N itself (stdin race). Instead it
@@ -36,22 +36,21 @@ public class Router {
   // The latch is a blocking synchronization primitive 
   // This prevents a race condition where multiple threads would try to read from System.in simultaneously,
   // which would cause input theft and deadlock.
-  private ConcurrentLinkedQueue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
+  private ConcurrentLinkedQueue<PendingRequest> pRequests = new ConcurrentLinkedQueue<>();
 
   // Holds a pending attach request so the main thread can prompt Y/N while the socket stays open
   private static class PendingRequest {
-    // declaring as final because these fields are set once at construction and never modified afterwards
-    final SOSPFPacket hello;
-    final Socket socket;
-    final ObjectOutputStream out;
-    // The 'accepted' field is set by the main thread after prompting Y/N, and read by the background thread to decide whether to accept or reject the attach request
-    boolean accepted;
-    // The latch starts at 1, meaning the background thread will block on latch.await() until the main thread calls latch.countDown() after setting 'accepted'
+    SOSPFPacket helloMsg;
+    Socket socket;
+    ObjectOutputStream out;
+    // The 'approved' field is set by the main thread after prompting Y/N, and read by the background thread to decide whether to accept or reject the attach request
+    boolean approved;
+    // The latch starts at 1, meaning the background thread will block on latch.await() until the main thread calls latch.countDown() after setting 'approved'
     // So basically the user decides
-    final CountDownLatch latch = new CountDownLatch(1); 
+    CountDownLatch cdlatch = new CountDownLatch(1); 
 
-    PendingRequest(SOSPFPacket hello, Socket socket, ObjectOutputStream out) {
-      this.hello = hello;
+    PendingRequest(SOSPFPacket helloMsg, Socket socket, ObjectOutputStream out) {
+      this.helloMsg = helloMsg;
       this.socket = socket;
       this.out = out;
     }
@@ -210,14 +209,14 @@ public class Router {
 
       // New neighbor will queue the request for the main terminal thread to prompt Y/N
       // We keep the socket open; the background thread blocks until the main thread decides
-      PendingRequest pr = new PendingRequest(hello, s, out);
-      pendingRequests.add(pr);
+      PendingRequest pRequest = new PendingRequest(hello, s, out);
+      pRequests.add(pRequest);
       System.out.println("received HELLO from " + hello.srcIP + ";");
 
-      // We block this thread until the terminal thread processes the Y/N
-      pr.latch.await();
+      // We then block this thread until the terminal thread processes the Y/N
+      pRequest.cdlatch.await();
 
-      if (pr.accepted) {
+      if (pRequest.approved) {
         // Find available port
         int portSlot = -1;
         synchronized (ports) {
@@ -502,7 +501,7 @@ public class Router {
   public void terminal() {
     try {
       // Use the dedicated stdinReader for the terminal thread to avoid conflicts with background threads that also need to read from System.in (e.g. for attach requests)
-      BufferedReader br = stdinReader;
+      BufferedReader bReader = inputReader;
       System.out.println("========================================");
       System.out.println("Process IP : " + rd.processIPAddress);
       System.out.println("Process Port : " + rd.processPortNumber);
@@ -511,11 +510,11 @@ public class Router {
 
       while (true) {
         // Poll: check for pending attach requests OR user input
-        processPendingRequests(br);
+        processPendingRequests(bReader); 
+        if (bReader.ready()) {
 
-        if (br.ready()) {
-          // User input ready — read the command and process it
-          String command = br.readLine();
+          // User input ready, read the command and process it
+          String command = bReader.readLine();
           if (command == null) break;
           if (command.startsWith("detect ")) {
             String[] cmdLine = command.split(" ");
@@ -565,30 +564,35 @@ public class Router {
   }
 
   // Drain pending attach requests, prompting Y/N for each on the main thread
-  private void processPendingRequests(BufferedReader br) {
-    PendingRequest pr;
+  private void processPendingRequests(BufferedReader bReader) {
+    PendingRequest pRequest;
+
+    // No point polling if queue is empty
+    if (pRequests.isEmpty()) {
+      return;
+    }
     // We process pending requests sequentially on the main thread to safely prompt Y/N without racing on System.in. 
     // Each request will block the background thread until the main thread processes it and signals via the latch.
-    while ((pr = pendingRequests.poll()) != null) {
+    while ((pRequest = pRequests.poll()) != null) { 
       try {
-        System.out.println("Do you accept this request from " + pr.hello.srcIP + "? (Y/N)");
-        // br.readline() is a blocking call
-        String answer = br.readLine();
+        System.out.println("Do you accept this request from " + pRequest.helloMsg.srcIP + "? (Y/N)");
+        // bReader.readline() is a blocking call
+        String answer = bReader.readLine();
         while (answer != null && !(answer.equalsIgnoreCase("Y") || answer.equalsIgnoreCase("N"))) {
           System.out.println("Answer not accepted/invalid.");
           System.out.println("Do you accept this request? (Y/N)");
-          answer = br.readLine();
+          answer = bReader.readLine();
         }
         // Check the user's answer and set the 'accepted' field of the PendingRequest accordingly, which will be read by the background thread after latch is released
-        if (answer != null && answer.equalsIgnoreCase("Y")) {
-          pr.accepted = true;
+        if (answer.equalsIgnoreCase("Y")) {
+          pRequest.approved = true;
         } else {
-          pr.accepted = false;
+          pRequest.approved = false;
         }
       } catch (IOException e) {
-        pr.accepted = false;
+        pRequest.approved = false;
       }
-      pr.latch.countDown(); // unblock the background thread by counting down from 1 to 0, allowing it to proceed
+      pRequest.cdlatch.countDown(); // unblock the background thread by counting down from 1 to 0, allowing it to proceed
     }
   }
 
