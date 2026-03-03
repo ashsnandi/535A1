@@ -19,6 +19,7 @@ public class Router {
 
   RouterDescription rd = new RouterDescription();
   private final NetworkLayer networkLayer; // new class - for threading
+  // Setting a default link weight for new links
   private final int defaultLinkWeight = 1;
 
   //assuming that all routers are with 4 ports
@@ -188,7 +189,8 @@ public class Router {
 
       // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
-      if (packet.sospfType == 2) {
+      // IMPLEMENT PA2: HANDLE LSAUPDATES HERE.
+      if (packet.sospfType == 4) {
         handleApplicationMessage(packet, out);
         return;
       }
@@ -278,7 +280,8 @@ public class Router {
   }
 
   private void processStart() {
-    
+    // IMPLEMENT PA2: FLOOD LSAUPDATE AFTER START.
+
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
@@ -359,7 +362,7 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-
+    // IMPLEMENT PA2: ATTACH, START, AND FLOOD HERE.
   }
 
   /**
@@ -389,7 +392,7 @@ public class Router {
    */
   private void updateWeight(String processIP, short processPort,
                              String simulatedIP, short weight){
-
+    // IMPLEMENT PA2: UPDATE THE COST AND FLOOD IT.
   }
 
   /**
@@ -401,7 +404,7 @@ public class Router {
    * @param newWeight the new weight/cost for the link attached to this port
    */
   private void processUpdate(short portNumber, short newWeight) {
-
+    // IMPLEMENT PA2: CHANGE THE PORT WEIGHT AND FLOOD IT.
   }
 
   /**
@@ -441,7 +444,7 @@ public class Router {
 
     // Create an application message packet to send to the next hop
     SOSPFPacket pkt = new SOSPFPacket();
-    pkt.sospfType = 2;
+    pkt.sospfType = 4;
     pkt.srcProcessIP = rd.processIPAddress;
     pkt.srcProcessPort = rd.processPortNumber;
     pkt.srcIP = rd.simulatedIPAddress;
@@ -459,7 +462,7 @@ public class Router {
 
   /**
    * handle incoming application message packet.
-   * This method should be called when a router receives a SOSPFPacket with sospfType = 2 (Application Message).
+   * This method should be called when a router receives a SOSPFPacket with sospfType = 4 (Application Message).
    * <p/>
    * If this router is the destination (packet.dstIP equals this router's simulatedIPAddress):
    * - Print "Received message from <Source IP>:"
@@ -668,6 +671,7 @@ public class Router {
     }
 
     self.lsaSeqNumber++;
+    // IMPLEMENT PA2: FLOOD THIS TO TWO_WAY NEIGHBORS.
   }
 
   private RouterDescription getNextHop(String destinationIP) {

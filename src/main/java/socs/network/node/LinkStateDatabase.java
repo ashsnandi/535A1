@@ -41,6 +41,7 @@ public class LinkStateDatabase {
     //TODO: fill the implementation here
     String sourceIP = rd.simulatedIPAddress;
     
+    // IMPLEMENT PA2: BUILD THIS FROM WEIGHEDGRAPH LATER.
     // Check if destination exists
     if (!_store.containsKey(destinationIP)) {
       return null;
