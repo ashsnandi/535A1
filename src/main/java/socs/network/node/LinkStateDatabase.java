@@ -15,6 +15,8 @@ public class LinkStateDatabase {
   //linkID => LSAInstance
   HashMap<String, LSA> _store = new HashMap<String, LSA>();
 
+  WeighedGraph graph = new WeighedGraph();
+
   private RouterDescription rd = null;
 
   public LinkStateDatabase(RouterDescription routerDescription) {
@@ -41,6 +43,7 @@ public class LinkStateDatabase {
     //TODO: fill the implementation here
     String sourceIP = rd.simulatedIPAddress;
     
+    // IMPLEMENT PA2: BUILD THIS FROM WEIGHEDGRAPH LATER.
     // Check if destination exists
     if (!_store.containsKey(destinationIP)) {
       return null;

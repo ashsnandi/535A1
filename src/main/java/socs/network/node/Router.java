@@ -1,5 +1,6 @@
 package socs.network.node;
 
+import socs.network.message.LinkDescription;
 import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
 
@@ -9,6 +10,7 @@ import java.io.InputStreamReader;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
+import java.util.Vector;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 
@@ -19,6 +21,7 @@ public class Router {
 
   RouterDescription rd = new RouterDescription();
   private final NetworkLayer networkLayer; // new class - for threading
+  // Setting a default link weight for new links
   private final int defaultLinkWeight = 1;
 
   //assuming that all routers are with 4 ports
@@ -189,7 +192,12 @@ public class Router {
 
       // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
-      if (packet.sospfType == 2) {
+      // LSA updates are merged into the local LSD and then re-flooded.
+      if (packet.sospfType == 1) {
+        handleLsaUpdate(packet);
+        return;
+      }
+      if (packet.sospfType == 4) {
         handleApplicationMessage(packet, out);
         return;
       }
@@ -280,7 +288,8 @@ public class Router {
   }
 
   private void processStart() {
-    
+    // IMPLEMENT PA2: FLOOD LSAUPDATE AFTER START.
+
     // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
@@ -317,19 +326,19 @@ public class Router {
       }
     }
 
-    // Configure router status // currenlty done in sendHelloToNeighbor
-
-    // Update own LSD
-
-    // Multicast LSA update packets to neighbors
-
+    // Flood the full link-state database to every TWO_WAY neighbor so the
+    // network converges after all HELLO handshakes have completed.
+    floodLsaUpdate(null);
   }
 
-  // Helper function to create and send a HELLO packet on process start
+  /**
+   * Build and send a HELLO packet to the given neighbor, then transition it to
+   * TWO_WAY if it was previously INIT.  Called during {@link #processStart()}.
+   *
+   * @param nbr the neighbor's description (destination of the HELLO)
+   * @param out the already-open output stream on the socket to {@code nbr}
+   */
   private void sendHelloToNeighbor(RouterDescription nbr, ObjectOutputStream out) {
-      
-    // Create HELLO packet
-
     SOSPFPacket hello = new SOSPFPacket();
     hello.sospfType = 0; // HELLO
 
@@ -380,7 +389,9 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-
+    // IMPLEMENT PA2: ATTACH, START, AND FLOOD HERE. Flooding happens as part of processStart() 
+    processAttach(processIP, processPort, simulatedIP, weight);
+    processStart();
   }
 
   /**
@@ -410,6 +421,7 @@ public class Router {
    */
   private void updateWeight(String processIP, short processPort,
                              String simulatedIP, short weight){
+    // IMPLEMENT PA2: UPDATE THE COST AND FLOOD IT.
 
   }
 
@@ -422,7 +434,7 @@ public class Router {
    * @param newWeight the new weight/cost for the link attached to this port
    */
   private void processUpdate(short portNumber, short newWeight) {
-
+    // IMPLEMENT PA2: CHANGE THE PORT WEIGHT AND FLOOD IT.
   }
 
   /**
@@ -462,7 +474,7 @@ public class Router {
 
     // Create an application message packet to send to the next hop
     SOSPFPacket pkt = new SOSPFPacket();
-    pkt.sospfType = 2;
+    pkt.sospfType = 4;
     pkt.srcProcessIP = rd.processIPAddress;
     pkt.srcProcessPort = rd.processPortNumber;
     pkt.srcIP = rd.simulatedIPAddress;
@@ -480,7 +492,7 @@ public class Router {
 
   /**
    * handle incoming application message packet.
-   * This method should be called when a router receives a SOSPFPacket with sospfType = 2 (Application Message).
+   * This method should be called when a router receives a SOSPFPacket with sospfType = 4 (Application Message).
    * <p/>
    * If this router is the destination (packet.dstIP equals this router's simulatedIPAddress):
    * - Print "Received message from <Source IP>:"
@@ -497,12 +509,14 @@ public class Router {
     if (packet.dstIP == null || packet.srcIP == null) {
       return;
     }
+    // Check if this router is the destination
     if (packet.dstIP.equals(rd.simulatedIPAddress)) {
       System.out.println("Received message from " + packet.srcIP + ":");
       System.out.println(packet.message);
       return;
     }
 
+    // This router is an intermediate hop, forward the packet to the next hop on the shortest path
     System.out.println("Forwarding packet from " + packet.srcIP + " to " + packet.dstIP);
     RouterDescription nextHop = getNextHop(packet.dstIP);
     if (nextHop == null) {
@@ -675,6 +689,7 @@ public class Router {
     rd.processPortNumber = port;
   }
 
+  // Look up the Link object in this router's ports that connects to the neighbor with the given simulated IP
   private Link findLinkBySimulatedIP(String simulatedIP) {
     if (simulatedIP == null) {
       return null;
@@ -718,7 +733,13 @@ public class Router {
     }
   }
 
-  // Helper function to update local LSA for a specific link and trigger synchronization by sending LSA update to all neighbors
+  /**
+   * Update (or add) a {@link LinkDescription} in this router's own LSA to
+   * reflect the current state of {@code link}, bump the sequence number, and
+   * flood the change to all TWO_WAY neighbors.
+   *
+   * @param link the local port whose weight / existence changed
+   */
   private void updateLocalLsaForLink(Link link) {
     // Update local LSA for the link
     socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
@@ -748,8 +769,12 @@ public class Router {
     }
 
     self.lsaSeqNumber++;
+
+    // Flood the updated LSA to all TWO_WAY neighbors
+    floodLsaUpdate(null);
   }
 
+  // Helper function -> next hop router description on shortest path to the destination IP. uses Link State Database
   private RouterDescription getNextHop(String destinationIP) {
     String path = lsd.getShortestPath(destinationIP);
     if (path == null) {
@@ -765,6 +790,99 @@ public class Router {
       return null;
     }
     return link.router2;
+  }
+
+  /**
+   * Flooding our entire LSD to every TWO_WAY neighbor.
+   * In this implementation we can skip the neighbor who sent us the update to
+   * avoid inefficient echo. Each neighbor receives full copy of
+   * lsd._store inside a type-1 (LSA Update) packet.
+   *
+   * @param excludedNeighborIp simulated IP of a neighbor to skip, or
+   *                        null to flood to everyone
+   */
+  private void floodLsaUpdate(String excludedNeighborIp) {
+    for (Link link : ports) {
+      // Check if the link is valid and the neighbor is in TWO_WAY state before flooding
+      if (link == null || link.router2.status != RouterStatus.TWO_WAY) {
+        continue;
+      }
+      // Check if the neighbor's simulated IP is null
+      if (link.router2.simulatedIPAddress == null) {
+        continue;
+      }
+      // Check if this neighbor is to be excluded from flooding (sender of the update)
+      if (excludedNeighborIp != null
+          && excludedNeighborIp.equals(link.router2.simulatedIPAddress)) {
+        continue;
+      }
+
+      // Create new socket connection and send LSD as LSA packet with lsaArray containing all LSAs in the local database
+      try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+        SOSPFPacket lsaUpdate = new SOSPFPacket();
+
+        // Set packet fields for LSA update
+        lsaUpdate.lsaArray = new Vector<>(lsd._store.values());
+
+        // Set rest of the normal packet fields 
+        lsaUpdate.sospfType = 1;
+        lsaUpdate.srcProcessIP = rd.processIPAddress;
+        lsaUpdate.srcProcessPort = rd.processPortNumber;
+        lsaUpdate.srcIP = rd.simulatedIPAddress;
+        lsaUpdate.dstIP = link.router2.simulatedIPAddress;
+
+        // Check if there are any LSAs to send as last check
+        if (lsaUpdate.lsaArray.isEmpty()) {
+          continue; // No need to send empty updates
+        }
+
+        out.writeObject(lsaUpdate);
+        out.flush();
+      } catch (IOException e) {
+        System.err.println("Failure sending LSA update to " + link.router2.simulatedIPAddress);
+      }
+    }
+  }
+
+  /**
+   * Merge incoming LSAs into the local database, keeping only entries with a
+   * higher sequence number.  If anything changed, re-flood to all TWO_WAY
+   * neighbors except the sender so the update propagates network-wide.
+   *
+   * @param packet the received type-1 (LSA Update) packet
+   */
+  private void handleLsaUpdate(SOSPFPacket packet) {
+    // Check for null, malformed packets 
+    if (packet == null || packet.lsaArray == null || packet.srcIP == null) {
+      return;
+    }
+
+    // boolean for tracking whether we need to flood updates to neighbors after merging the incoming new LSAs
+    boolean finished = false;
+
+    Vector<socs.network.message.LSA> incomingLsaArray = packet.lsaArray;
+    for (socs.network.message.LSA newLsa : incomingLsaArray) {
+      // Check for null or malformed LSA entries in the array before processing each LSA
+      if (newLsa == null || newLsa.linkStateID == null || newLsa.lsaSeqNumber < 0) {
+        continue;
+      }
+
+      // Get current linkStateID for comparison
+      socs.network.message.LSA current = lsd._store.get(newLsa.linkStateID);
+
+      // Merge new LSA if newer
+      if (current == null || newLsa.lsaSeqNumber > current.lsaSeqNumber) {
+        lsd._store.put(newLsa.linkStateID, newLsa);
+        // Mark overall need to continue flooding to neighbors
+        finished = true;
+      }
+    }
+
+    // If any LSAs were updated, flood the updates to all TWO_WAY neighbors
+    if (finished) {
+      floodLsaUpdate(packet.srcIP);
+    }
   }
 
 }
