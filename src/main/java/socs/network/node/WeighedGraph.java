@@ -13,7 +13,7 @@ class WeighedGraph {
 
   // Contructor that builds the graph from the given LSA store. 
   // It extracts all unique node IDs and initializes the edges based on the link descriptions in the LSAs.
-  WeighedGraph(Map<String, LSA> store) {
+  WeighedGraph() {
     
   }
 }
