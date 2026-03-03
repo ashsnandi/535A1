@@ -12,9 +12,9 @@ class WeighedGraph {
   int[][] edges;
 
   // Contructor that builds the graph from the given LSA store. 
-  // It extracts all unique node IDs and initializes the edges based on the link descriptions in the LSAs.
   WeighedGraph() {
-    
+    nodeIds = new String[0];
+    edges = new int[0][0];
   }
 
   void addEdge(String fromNode, String toNode, int weight) {
