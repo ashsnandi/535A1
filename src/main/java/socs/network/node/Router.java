@@ -383,7 +383,9 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-    // IMPLEMENT PA2: ATTACH, START, AND FLOOD HERE.
+    // IMPLEMENT PA2: ATTACH, START, AND FLOOD HERE. Flooding happens as part of processStart() 
+    processAttach(processIP, processPort, simulatedIP, weight);
+    processStart();
   }
 
   /**
@@ -414,6 +416,7 @@ public class Router {
   private void updateWeight(String processIP, short processPort,
                              String simulatedIP, short weight){
     // IMPLEMENT PA2: UPDATE THE COST AND FLOOD IT.
+
   }
 
   /**
@@ -500,12 +503,14 @@ public class Router {
     if (packet.dstIP == null || packet.srcIP == null) {
       return;
     }
+    // Check if this router is the destination
     if (packet.dstIP.equals(rd.simulatedIPAddress)) {
       System.out.println("Received message from " + packet.srcIP + ":");
       System.out.println(packet.message);
       return;
     }
 
+    // This router is an intermediate hop, forward the packet to the next hop on the shortest path
     System.out.println("Forwarding packet from " + packet.srcIP + " to " + packet.dstIP);
     RouterDescription nextHop = getNextHop(packet.dstIP);
     if (nextHop == null) {
@@ -769,6 +774,11 @@ public class Router {
       return null;
     }
     return link.router2;
+  }
+
+  private void floodLsaUpdate() {
+    // IMPLEMENT PA2: FLOOD LSA UPDATE TO ALL TWO_WAY NEIGHBORS.
+    
   }
 
 }

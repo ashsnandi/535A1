@@ -15,6 +15,8 @@ public class LinkStateDatabase {
   //linkID => LSAInstance
   HashMap<String, LSA> _store = new HashMap<String, LSA>();
 
+  WeighedGraph graph = new WeighedGraph();
+
   private RouterDescription rd = null;
 
   public LinkStateDatabase(RouterDescription routerDescription) {
