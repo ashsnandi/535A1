@@ -1,82 +1,44 @@
-# COMP535 Project Starter Code
+Usage
 
-## Requirements
-
-To compile and run this project, you need:
-
-- **Java**: Version 8 or higher (JDK 8+)
-- **Maven**: Version 3.0 or higher
-
-### Checking Your Versions
-
-You can check if you have the required versions installed:
-
-```bash
-java -version
-mvn -version
-```
-
-If you don't have these installed, please install them before proceeding.
-
-## Building the Project
-
-To compile the project:
-
-```bash
-mvn clean compile
-```
-
-To compile and create a JAR file:
-
-```bash
-mvn clean package
-```
-
-The compiled classes will be in `target/classes/` directory.
-
-## Running the Program
-
-Create an executable JAR with dependencies and run it:
-
-```bash
+Build the jar with dependencies:
 mvn clean package assembly:single
+
+Run a router with a config file:
 java -jar target/COMP535-1.0-SNAPSHOT-jar-with-dependencies.jar conf/router1.conf
-```
 
-## Troubleshooting
+Windows convenience:
+run-routers.bat (after building) opens 4 PowerShell windows using conf/router1.conf through conf/router4.conf.
 
-### "JAVA_HOME not set" error
-- Make sure Java is installed and JAVA_HOME environment variable points to your Java installation
-- On Linux/Mac: `export JAVA_HOME=/path/to/java`
-- On Windows: Set JAVA_HOME in System Environment Variables
+Command reference
 
-### "Maven not found" error
-- Make sure Maven is installed and added to your PATH
-- Verify with: `mvn -version`
+attach [Process IP] [Process Port] [Simulated IP] [Weight]
+	- Sends a HELLO to the remote router and creates a local link on success.
+	- Incoming attach requests prompt: "Do you accept this request from <IP>? (Y/N)".
 
-### Compilation errors
-- Ensure you have Java 8 or higher installed
-- Ensure you have Maven 3.0 or higher installed
-- Try: `mvn clean compile` to rebuild from scratch
+start
+	- Sends HELLO to all attached neighbors to reach TWO_WAY state.
 
-### "Could not find or load main class" error
-- Make sure you built the JAR file: `mvn clean package assembly:single`
-- Verify the JAR exists: `ls target/COMP535-1.0-SNAPSHOT-jar-with-dependencies.jar`
-- Rebuild the project: `mvn clean package assembly:single`
-- Use the correct command: `java -jar target/COMP535-1.0-SNAPSHOT-jar-with-dependencies.jar conf/router1.conf`
+neighbors
+	- Prints current neighbor simulated IPs from the local LSA.
 
-### Maven settings.xml warning
-- If you see a warning about "Unrecognised tag: 'blocked'" in Maven settings.xml, you can safely ignore it
-- This is a system-level Maven configuration issue and does not affect the build
-- The build will still succeed despite this warning
+detect [Destination IP]
+	- Prints the shortest path based on the Link State Database.
 
-## Project Structure
+send [Destination IP] [Message]
+	- Sends an application message using shortest-path forwarding.
 
-```
-src/
-  main/
-    java/          # Source code
-  resources/       # Configuration files
-conf/              # Router configuration files
-target/            # Compiled classes (generated)
-```
+connect [Process IP] [Process Port] [Simulated IP] [Weight]
+disconnect [port_number]
+update [port_number] [new_weight]
+	- These commands are wired in the CLI but the implementations are currently stubs.
+
+quit
+	- Stops the listener and exits.
+
+Implementation Details
+
+- NetworkLayer opens a ServerSocket on the router process port, spawns a handler thread per connection, and logs the bound port.
+- A pending-request queue avoids System.in race conditions: background threads enqueue attach requests, the terminal thread prompts Y/N, then releases the handler.
+- attach performs a HELLO handshake on the outgoing socket and creates a Link with neighbor status INIT on success.
+- start sends HELLO to each attached link, promotes neighbors to TWO_WAY, and updates the local LSA entry for the link.
+- send forwards application messages hop-by-hop: intermediate routers log forwarding, and the destination logs the received message.
