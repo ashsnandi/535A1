@@ -3,9 +3,11 @@ package socs.network.node;
 import socs.network.message.LSA;
 import socs.network.message.LinkDescription;
 
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.PriorityQueue;
 
 
@@ -37,74 +39,11 @@ public class LinkStateDatabase {
    * @return the shortest path as a string, or null if no path exists
    */
   String getShortestPath(String destinationIP) {
-
-    // this is my implemnetation based off of 
-    // https://www.geeksforgeeks.org/dsa/dijkstras-shortest-path-algorithm-greedy-algo-7/
-    //TODO: fill the implementation here
-    String sourceIP = rd.simulatedIPAddress;
-    
-    // IMPLEMENT PA2: BUILD THIS FROM WEIGHEDGRAPH LATER.
-    // Check if destination exists
-    if (!_store.containsKey(destinationIP)) {
+    List<String> path = computeShortestPathNodes(destinationIP);
+    if (path == null) {
       return null;
     }
-    
-    // Check if source and destination are the same
-    if (sourceIP.equals(destinationIP)) {
-      return sourceIP;
-    }
-    
-    int V = _store.size();
-    String[] nodes = (String[]) _store.keySet().toArray();
-  
-    PriorityQueue<State> pq = new PriorityQueue<State>((a,b) -> Integer.compare(a.distance, b.distance));
 
-    HashMap<String, Integer> distance = new HashMap<>();
-    HashMap<String, String> parent = new HashMap<>(); // Track previous node for path reconstruction
-    
-    for (String id : nodes){
-      distance.put(id, Integer.MAX_VALUE);
-      parent.put(id, null);
-    }
-
-    distance.put(sourceIP, 0);
-    pq.offer(new State(sourceIP, 0));
-
-    while(!pq.isEmpty()){
-      State top = pq.poll();
-      String id = top.nodeIP;
-      int dist = top.distance;
-      LSA cur_node = _store.get(id);
-      if (dist > distance.get(id)){
-        continue;
-      }
-
-      // explore all adjacent vertices through the linked list
-      LinkedList<LinkDescription> adj = cur_node.links;
-      for (LinkDescription l : adj){
-        String nextNode = l.linkID;
-        int nextDist = l.weight;
-        if (distance.get(id) + nextDist < distance.get(nextNode)){
-          distance.put(nextNode, distance.get(id) + nextDist);
-          parent.put(nextNode, id);
-          pq.offer(new State(nextNode, distance.get(nextNode)));
-        }
-      }
-    }
-    
-    // Reconstruct path by backtracking from destination to source
-    if (distance.get(destinationIP) == Integer.MAX_VALUE) {
-      return null; 
-    }
-    
-    LinkedList<String> path = new LinkedList<>();
-    String current = destinationIP;
-    while (current != null) {
-      path.addFirst(current);
-      current = parent.get(current);
-    }
-    
-    // concatenate!!
     StringBuilder result = new StringBuilder();
     for (int i = 0; i < path.size(); i++) {
       result.append(path.get(i));
@@ -112,8 +51,111 @@ public class LinkStateDatabase {
         result.append(" -> ");
       }
     }
-    
     return result.toString();
+  }
+
+  String getShortestPathForDisplay(String destinationIP) {
+    List<String> path = computeShortestPathNodes(destinationIP);
+    if (path == null) {
+      return null;
+    }
+
+    if (path.size() == 1) {
+      return "Path found: " + path.get(0);
+    }
+
+    StringBuilder result = new StringBuilder("Path found: ");
+    result.append(path.get(0));
+    for (int i = 1; i < path.size(); i++) {
+      Integer weight = getEdgeWeight(path.get(i - 1), path.get(i));
+      if (weight == null) {
+        return null;
+      }
+      result.append(" -> (").append(weight).append(") ").append(path.get(i));
+    }
+    return result.toString();
+  }
+
+  private List<String> computeShortestPathNodes(String destinationIP) {
+    String sourceIP = rd.simulatedIPAddress;
+
+    if (destinationIP == null || destinationIP.isEmpty() || !_store.containsKey(destinationIP)) {
+      return null;
+    }
+
+    if (sourceIP.equals(destinationIP)) {
+      return Collections.singletonList(sourceIP);
+    }
+
+    PriorityQueue<State> pq = new PriorityQueue<>((a, b) -> Integer.compare(a.distance, b.distance));
+    HashMap<String, Integer> distance = new HashMap<>();
+    HashMap<String, String> parent = new HashMap<>();
+
+    for (String id : _store.keySet()) {
+      distance.put(id, Integer.MAX_VALUE);
+      parent.put(id, null);
+    }
+
+    distance.put(sourceIP, 0);
+    pq.offer(new State(sourceIP, 0));
+
+    while (!pq.isEmpty()) {
+      State top = pq.poll();
+      String id = top.nodeIP;
+      int dist = top.distance;
+
+      Integer known = distance.get(id);
+      if (known == null || dist > known) {
+        continue;
+      }
+
+      LSA currentNode = _store.get(id);
+      if (currentNode == null || currentNode.links == null) {
+        continue;
+      }
+
+      for (LinkDescription link : currentNode.links) {
+        String nextNode = link.linkID;
+        if (!_store.containsKey(nextNode) || !distance.containsKey(nextNode)) {
+          continue;
+        }
+
+        int nextDist = distance.get(id) + link.weight;
+        if (nextDist < distance.get(nextNode)) {
+          distance.put(nextNode, nextDist);
+          parent.put(nextNode, id);
+          pq.offer(new State(nextNode, nextDist));
+        }
+      }
+    }
+
+    Integer destinationDistance = distance.get(destinationIP);
+    if (destinationDistance == null || destinationDistance == Integer.MAX_VALUE) {
+      return null;
+    }
+
+    LinkedList<String> path = new LinkedList<>();
+    String current = destinationIP;
+    while (current != null) {
+      path.addFirst(current);
+      current = parent.get(current);
+    }
+
+    return new ArrayList<>(path);
+  }
+
+  private Integer getEdgeWeight(String from, String to) {
+    LSA lsa = _store.get(from);
+    if (lsa == null || lsa.links == null) {
+      return null;
+    }
+
+    for (LinkDescription link : lsa.links) {
+      if (to.equals(link.linkID)) {
+        return link.weight;
+      }
+    }
+    return null;
   }
 
   //initialize the linkstate database by adding an entry about the router itself

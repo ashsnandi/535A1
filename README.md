@@ -26,6 +26,22 @@ detect [Destination IP]
 
 send [Destination IP] [Message]
 	- Sends an application message using shortest-path forwarding.
+	- Message text can include spaces.
+	- Usage shown by CLI when malformed: `Usage: send [Destination IP] [Message]`.
+
+Using `send`
+
+1) Make sure links are established (via `attach`/`connect`) and routers are in neighbor state (`start`).
+2) From the source router terminal, run:
+
+   send 192.168.0.4 hello from router1
+
+3) Expected behavior:
+	- Source prints: `Sending message to <Destination IP>`
+	- Intermediate routers print a forwarding line.
+	- Destination prints sender + message content.
+
+If no route exists in the current Link State Database, the source prints `Path not found`.
 
 connect [Process IP] [Process Port] [Simulated IP] [Weight]
 disconnect [port_number]

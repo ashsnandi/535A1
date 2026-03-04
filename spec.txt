@@ -1,0 +1,73 @@
+Programming Assignment 2 (PA2)
+Overview
+In this assignment, you will extend your PA1 implementation to support link state database
+synchronization and shortest path computation. While PA1 focused on topology construction and
+neighbor establishment using the HELLO handshake, PA2 requires a full implementation of
+LSAUPDATE-based synchronization. For more details, refer to the LSDB update and synchronization
+process described in the LSR general description document.
+Specifically, when a router starts, routers must exchange link-state information so that all routers
+eventually have a consistent view of the network.
+New Requirements in PA2:
+Compared to PA1, you must implement the following additional functionalities:
+1. Link State Database Synchronization (LSAUPDATE) (start command) (40
+points)
+a. The start command must now perform both: HELLO message exchange to establish
+neighbor states, and LSAUPDATE propagation to synchronize the link state database.
+b. Each router must broadcast its current Link State Database (LSD) to its neighbors using
+LSAUPDATE messages.
+c. Upon receiving an LSAUPDATE message, a router must:
+i. Compare LSA sequence numbers.
+ii. Update its LSD only if the received LSA is newer.
+iii. Forward the LSAUPDATE to all neighbors except the one it was received from.
+d. This functionality was not required in PA1 and must now be added by extending your
+existing PA1 code.
+2. Shortest Path Computation (detect command) (30 points)
+a. Implement the detect [IP Address] command.
+b. When executed, the router must compute the shortest path from itself to the destination
+router identified by the given simulated IP address, using the current Link State Database.
+c. To test detect, the grader will first build the topology by running attach and start
+commands in PA2 (same as PA1). Your implementation must therefore carry link costs
+during attachment. Update processATTACH() in the Router class to record the link
+weight for the new neighbor and add a corresponding weight (cost) field to the Link
+class, so the Link State Database can compute shortest paths correctly.
+d. Example: Assume the following:
+i. Router 1 simulated IP: 192.168.1.1
+ii. Router 5 simulated IP: 192.168.1.5
+iii. If the detect 192.168.1.5 command is executed on Router 1:
+Output on Router 1’s terminal (path exists):
+Path found: 192.168.1.1 (2) -> 192.168.1.2 -> (2) 192.168.1.3 -> (2)
+192.168.1.4 -> (2) 192.168.1.5
+iv. If the detect 192.168.1.6 command is executed on Router 1:
+Output on Router 1’s terminal (path does not exist):
+Path not found
+3. Application Message Forwarding (send command) (30 Points)
+a. Implement the send [Destination IP] [Message] command.
+b. Forward the message hop by hop using the shortest path.
+c. Only the source router and the destination router may display the message content.
+Intermediate routers do not inspect payload.
+d. Example: Assume the following:
+i. Router 1 simulated IP: 192.168.1.1
+ii. Router 5 simulated IP: 192.168.1.5
+iii. Shortest path computed by the Link State Database:
+192.168.1.1 -> 192.168.1.2 -> 192.168.1.3 -> 192.168.1.4 -> 192.168.1.5
+The following command is executed on Router 1’s terminal:
+send 192.168.1.5 Hi Router 5
+Output on Router 2 terminal (intermediate router)
+Forwarding message from 192.168.1.1 to 192.168.1.5
+Next hop: 192.168.1.3
+Output on Router 3 terminal (intermediate router)
+Forwarding message from 192.168.1.1 to 192.168.1.5
+Next hop: 192.168.1.4
+Output on Router 4 terminal (intermediate router)
+Forwarding message from 192.168.1.1 to 192.168.1.5
+Next hop: 192.168.1.5
+Output of Router 5 terminal:
+Received message from 192.168.1.1;
+Message: Hi Router 5
+Deliverables
+Please make sure your terminal output closely matches the examples shown above, since consistent
+formatting helps us grade fairly and quickly.
+Submit a single .zip that includes:
+• the full Java project, and
+• a short README with how to run your code and any important implementation notes.
+Upload your submission to your group area on MyCourses. Best of luck.

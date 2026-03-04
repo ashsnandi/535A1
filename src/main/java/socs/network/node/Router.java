@@ -96,9 +96,9 @@ public class Router {
    * @param destinationIP the ip adderss of the destination simulated router
    */
   private void processDetect(String destinationIP) {
-    String path = lsd.getShortestPath(destinationIP);
+    String path = lsd.getShortestPathForDisplay(destinationIP);
     if (path == null) {
-      System.out.println("No path found");
+      System.out.println("Path not found");
       return;
     }
     System.out.println(path);
@@ -111,7 +111,30 @@ public class Router {
    * @param portNumber the port number which the link attaches at
    */
   private void processDisconnect(short portNumber) {
+    // disconnect the link at the given port number
+    // IMPLEMENT PA2: DISCONNECT AND FLOOD LSA UPDATE AFTER DISCONNECTION.
 
+
+    // find port number
+      if (portNumber < 0 || portNumber >= ports.length) {
+        System.out.println("Invalid port number. Must be between 0 and " + (ports.length - 1));
+        return;
+      }
+      Link link = ports[portNumber];
+      if (link == null) {
+        System.out.println("No link attached at port " + portNumber);
+        return;
+      }
+      // Remove the link from the ports array
+      ports[portNumber] = null;
+      // Update local LSA to remove this link and flood the change to neighbors
+      socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+      if (self != null) {
+        self.links.removeIf(ld -> ld.portNum == portNumber);
+        self.lsaSeqNumber++;
+        floodLsaUpdate(null);
+      }
+      
   }
 
   /**
@@ -456,23 +479,20 @@ public class Router {
    * @param message the message content to send
    */
   private void processSend(String destinationIP, String message) {
-    // Print the sending message log
     System.out.println("Sending message to " + destinationIP);
-    // If the destination is this router itself, print the received message log and return
+
     if (destinationIP.equals(rd.simulatedIPAddress)) {
-      System.out.println("Received message from " + rd.simulatedIPAddress + ":");
-      System.out.println(message);
+      System.out.println("Received message from " + rd.simulatedIPAddress + ";");
+      System.out.println("Message: " + message);
       return;
     }
 
-    // Find the next hop on the shortest path to the destination using the Link State Database
     RouterDescription nextHop = getNextHop(destinationIP);
     if (nextHop == null) {
-      System.out.println("No path found");
+      System.out.println("Path not found");
       return;
     }
 
-    // Create an application message packet to send to the next hop
     SOSPFPacket pkt = new SOSPFPacket();
     pkt.sospfType = 4;
     pkt.srcProcessIP = rd.processIPAddress;
@@ -481,7 +501,6 @@ public class Router {
     pkt.dstIP = destinationIP;
     pkt.message = message;
 
-    // Open a new socket to the next hop for sending (not the incoming socket)
     try (Socket socket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
       sendPacket(pkt, nextHop, out);
@@ -511,18 +530,19 @@ public class Router {
     }
     // Check if this router is the destination
     if (packet.dstIP.equals(rd.simulatedIPAddress)) {
-      System.out.println("Received message from " + packet.srcIP + ":");
-      System.out.println(packet.message);
+      System.out.println("Received message from " + packet.srcIP + ";");
+      System.out.println("Message: " + packet.message);
       return;
     }
 
     // This router is an intermediate hop, forward the packet to the next hop on the shortest path
-    System.out.println("Forwarding packet from " + packet.srcIP + " to " + packet.dstIP);
+    System.out.println("Forwarding message from " + packet.srcIP + " to " + packet.dstIP);
     RouterDescription nextHop = getNextHop(packet.dstIP);
     if (nextHop == null) {
-      System.out.println("No path found");
+      System.out.println("Path not found");
       return;
     }
+    System.out.println("Next hop: " + nextHop.simulatedIPAddress);
 
     // Open a new socket to the next hop for forwarding (not the incoming socket)
     try (Socket fwdSocket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
@@ -780,16 +800,36 @@ public class Router {
     if (path == null) {
       return null;
     }
-    String[] hops = path.split(" -> ");
+    String[] hops = path.split("\\s*->\\s*");
     if (hops.length < 2) {
       return null;
     }
-    String nextHopIP = hops[1].trim();
+    String nextHopIP = extractIPAddress(hops[1]);
+    if (nextHopIP == null) {
+      return null;
+    }
     Link link = findLinkBySimulatedIP(nextHopIP);
     if (link == null) {
       return null;
     }
     return link.router2;
+  }
+
+  private String extractIPAddress(String hopToken) {
+    if (hopToken == null) {
+      return null;
+    }
+    String trimmed = hopToken.trim();
+    if (trimmed.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+      return trimmed;
+    }
+    String[] parts = trimmed.split("\\s+");
+    for (String p : parts) {
+      if (p.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+        return p;
+      }
+    }
+    return null;
   }
 
   /**
