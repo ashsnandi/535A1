@@ -111,10 +111,8 @@ public class Router {
    *
    * @param portNumber the port number which the link attaches at
    */
-  private void processDisconnect(short portNumber) {
+  private void processDisconnect(int portNumber) {
     // disconnect the link at the given port number
-    // IMPLEMENT PA2: DISCONNECT AND FLOOD LSA UPDATE AFTER DISCONNECTION.
-
 
     // find port number
       if (portNumber < 0 || portNumber >= ports.length) {
@@ -440,6 +438,11 @@ public class Router {
    * disconnect with all neighbors and quit the program
    */
   private void processQuit() {
+    for (int i = 0; i < ports.length; i++) {
+      if (ports[i] != null) {
+        processDisconnect(i);
+      }
+    }
     networkLayer.stop(); // stop the main router
   }
 
