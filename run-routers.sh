@@ -17,8 +17,8 @@ launch_router() {
   local conf="$2"
   local cmd="cd '$PWD' && java -jar '$JAR' '$conf'"
 
-  if command -v gnome-terminal >/dev/null 2>&1; then
-    gnome-terminal --title="$title" -- bash -lc "$cmd; exec bash"
+  if command -v kitty >/dev/null 2>&1; then
+    kitty --detach --title="$title" -- bash -lc "$cmd; exec bash"
   elif command -v konsole >/dev/null 2>&1; then
     konsole --new-tab -p tabtitle="$title" -e bash -lc "$cmd; exec bash"
   elif command -v xterm >/dev/null 2>&1; then

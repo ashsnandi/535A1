@@ -172,6 +172,7 @@ public class Router {
       hello.srcIP = rd.simulatedIPAddress;
       hello.dstIP = simulatedIP;
       hello.neighborID = rd.simulatedIPAddress;
+      hello.linkWeight = weight;
       
       out.writeObject(hello); // write to socket stream
       out.flush();
@@ -277,7 +278,8 @@ public class Router {
         rd2.status = RouterStatus.INIT;
         System.out.println("set " + hello.srcIP + " STATE to INIT;");
 
-        Link newLink = new Link(rd, rd2, portSlot, defaultLinkWeight);
+        int inboundWeight = pRequest.helloMsg.linkWeight > 0 ? pRequest.helloMsg.linkWeight : defaultLinkWeight;
+        Link newLink = new Link(rd, rd2, portSlot, inboundWeight);
 
         synchronized (ports) {
           ports[portSlot] = newLink;
@@ -904,7 +906,7 @@ public class Router {
     Vector<socs.network.message.LSA> incomingLsaArray = packet.lsaArray;
     for (socs.network.message.LSA newLsa : incomingLsaArray) {
       // Check for null or malformed LSA entries in the array before processing each LSA
-      if (newLsa == null || newLsa.linkStateID == null || newLsa.lsaSeqNumber < 0) {
+      if (newLsa == null || newLsa.linkStateID == null) {
         continue;
       }
 

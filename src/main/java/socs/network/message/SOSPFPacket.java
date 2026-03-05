@@ -30,4 +30,7 @@ public class SOSPFPacket implements Serializable {
   // IMPLEMENT PA2: RENAME THIS TO appMessage.
   public String message; //user inputted message payload
 
+  //used by HELLO attach handshake to communicate the link cost
+  public int linkWeight;
+
 }

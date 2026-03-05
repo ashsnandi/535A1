@@ -6,9 +6,11 @@ import socs.network.message.LinkDescription;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.Set;
 
 
 
@@ -79,7 +81,7 @@ public class LinkStateDatabase {
   private List<String> computeShortestPathNodes(String destinationIP) {
     String sourceIP = rd.simulatedIPAddress;
 
-    if (destinationIP == null || destinationIP.isEmpty() || !_store.containsKey(destinationIP)) {
+    if (destinationIP == null || destinationIP.isEmpty()) {
       return null;
     }
 
@@ -91,7 +93,28 @@ public class LinkStateDatabase {
     HashMap<String, Integer> distance = new HashMap<>();
     HashMap<String, String> parent = new HashMap<>();
 
-    for (String id : _store.keySet()) {
+    Set<String> knownNodes = new HashSet<>();
+    knownNodes.add(sourceIP);
+    for (LSA lsa : _store.values()) {
+      if (lsa == null || lsa.linkStateID == null) {
+        continue;
+      }
+      knownNodes.add(lsa.linkStateID);
+      if (lsa.links == null) {
+        continue;
+      }
+      for (LinkDescription link : lsa.links) {
+        if (link != null && link.linkID != null) {
+          knownNodes.add(link.linkID);
+        }
+      }
+    }
+
+    if (!knownNodes.contains(destinationIP)) {
+      return null;
+    }
+
+    for (String id : knownNodes) {
       distance.put(id, Integer.MAX_VALUE);
       parent.put(id, null);
     }
@@ -115,8 +138,17 @@ public class LinkStateDatabase {
       }
 
       for (LinkDescription link : currentNode.links) {
+        if (link == null || link.linkID == null) {
+          continue;
+        }
+
         String nextNode = link.linkID;
-        if (!_store.containsKey(nextNode) || !distance.containsKey(nextNode)) {
+        if (!distance.containsKey(nextNode)) {
+          distance.put(nextNode, Integer.MAX_VALUE);
+          parent.put(nextNode, null);
+        }
+
+        if (distance.get(id) == Integer.MAX_VALUE) {
           continue;
         }
 
