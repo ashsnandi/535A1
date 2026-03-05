@@ -75,7 +75,14 @@ public class Router {
     rd.processPortNumber = 0;
     try {
       rd.processPortNumber = config.getShort("socs.network.router.port");
-    } catch (Exception ignored) {
+    } catch (Exception numberReadError) {
+      // Some configs provide the port as a quoted string (e.g., "32001").
+      // Fall back to parsing the string value to avoid silently binding to a random port.
+      try {
+        rd.processPortNumber = Short.parseShort(config.getString("socs.network.router.port"));
+      } catch (Exception stringReadError) {
+        System.err.println("Invalid or missing config key socs.network.router.port; defaulting to ephemeral port");
+      }
     }
 
     // Initialize Link State Database and Network Layer
