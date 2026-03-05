@@ -17,55 +17,93 @@ class WeighedGraph {
     edges = new int[0][0];
   }
 
-  void addEdge(String fromNode, String toNode, int weight) {
-    // adds an edge from 'fromNode' to 'toNode' with the given weight.
-    // Check if nodes exist. Throw error if not. Update the edges matrix accordingly.
-    if (!nodePresent(fromNode) || !nodePresent(toNode)) {
-      throw new IllegalArgumentException("One or both nodes do not exist in the graph.");
-    }
+  // WILL NOT BE USING WEIGHED GRAPH CLASS AS OF NOW
+  // COMMENTING OUT METHODS FOR NOW, BUT KEEPING THEM IN CASE WE DECIDE TO USE THIS CLASS LATER.
 
-    // Actual implementation
-    int fromNodeIndex = getNodeIndex(fromNode);
-    int toNodeIndex = getNodeIndex(toNode);
-    edges[fromNodeIndex][toNodeIndex] = weight;
-  }
+  // void addEdge(String fromNode, String toNode, int weight) {
+  //   // adds an edge from 'fromNode' to 'toNode' with the given weight.
+  //   // Check if nodes exist. Throw error if not. Update the edges matrix accordingly.
+  //   if (!nodePresent(fromNode) || !nodePresent(toNode)) {
+  //     throw new IllegalArgumentException("One or both nodes do not exist in the graph.");
+  //   }
 
-  void addNode(String nodeId) {
+  //   // Actual implementation
+  //   int fromNodeIndex = getNodeIndex(fromNode);
+  //   int toNodeIndex = getNodeIndex(toNode);
+  //   edges[fromNodeIndex][toNodeIndex] = weight;
+  // }
 
-    // adds a node with the given ID to the graph.
-    // Check if node already exists. Throw error if it does. 
-    if (nodePresent(nodeId)) {
-      throw new IllegalArgumentException("Node with ID " + nodeId + " already exists in the graph.");
-    }
+  // void addNode(String nodeId) {
 
-    // Actual implementation
-    nodeIds = java.util.Arrays.copyOf(nodeIds, nodeIds.length + 1);
-    nodeIds[nodeIds.length - 1] = nodeId;
-    // Resize the edges matrix to accommodate the new node
-    int[][] updatedEdges = new int[nodeIds.length][nodeIds.length];
-    for (int i = 0; i < edges.length; i++) {
-      System.arraycopy(edges[i], 0, updatedEdges[i], 0, edges[i].length);
-    }
-    edges = updatedEdges;
-  }
+  //   // adds a node with the given ID to the graph.
+  //   // Check if node already exists. Throw error if it does. 
+  //   if (nodePresent(nodeId)) {
+  //     throw new IllegalArgumentException("Node with ID " + nodeId + " already exists in the graph.");
+  //   }
 
-  boolean nodePresent(String nodeId) {
-    // Checking if node with given ID is already present in the graph
-    for (String id : nodeIds) {
-      if (id.equals(nodeId)) {
-        return true;
-      }
-    }
-    return false;
-  }
+  //   // Actual implementation
+  //   nodeIds = java.util.Arrays.copyOf(nodeIds, nodeIds.length + 1);
+  //   nodeIds[nodeIds.length - 1] = nodeId;
+  //   // Resize the edges matrix to accommodate the new node
+  //   int[][] updatedEdges = new int[nodeIds.length][nodeIds.length];
+  //   for (int i = 0; i < edges.length; i++) {
+  //     System.arraycopy(edges[i], 0, updatedEdges[i], 0, edges[i].length);
+  //   }
+  //   edges = updatedEdges;
+  // }
 
-  int getNodeIndex(String nodeId) {
-    // Scan array for the given node ID and return index
-    for (int i = 0; i < nodeIds.length; i++) {
-      if (nodeIds[i].equals(nodeId)) {
-        return i;
-      }
-    }
-    throw new IllegalArgumentException(nodeId + " node does not exist in the graph.");
-  }
+  // boolean nodePresent(String nodeId) {
+  //   // Checking if node with given ID is already present in the graph
+  //   for (String id : nodeIds) {
+  //     if (id.equals(nodeId)) {
+  //       return true;
+  //     }
+  //   }
+  //   return false;
+  // }
+
+  // int getNodeIndex(String nodeId) {
+  //   // Scan array for the given node ID and return index
+  //   for (int i = 0; i < nodeIds.length; i++) {
+  //     if (nodeIds[i].equals(nodeId)) {
+  //       return i;
+  //     }
+  //   }
+  //   throw new IllegalArgumentException(nodeId + " node does not exist in the graph.");
+  // }
+
+  // // removes edge from 'fromNode' to 'toNode' by setting the weight to Integer.MAX_VALUE (indicating no edge).
+  // void removeEdge(String fromNode, String toNode) {
+  //   // removes the edge from 'fromNode' to 'toNode'.
+  //   // Check if nodes exist. Throw error if not. Update the edges matrix accordingly.
+  //   if (!nodePresent(fromNode)) {
+  //     throw new IllegalArgumentException("Node with ID " + fromNode + " doesn't exist");
+  //   }
+
+  //   if (!nodePresent(toNode)) {
+  //     throw new IllegalArgumentException("Node with ID " + toNode + " doesn't exist");
+  //   }
+
+  //   if (!edgePresent(fromNode, toNode)) {
+  //     throw new IllegalArgumentException("Edge does not exist between " + fromNode + " and " + toNode + ".");
+  //   }
+  //   // Actual implementation
+  //   int fromNodeIndex = getNodeIndex(fromNode);
+  //   int toNodeIndex = getNodeIndex(toNode);
+  //   edges[fromNodeIndex][toNodeIndex] = Integer.MAX_VALUE; // Assuming Integer.MAX_VALUE indicates no edge
+  // }
+
+  // boolean edgePresent(String fromNode, String toNode) {
+  //   if (!nodePresent(fromNode)) {
+  //     throw new IllegalArgumentException("fromNode with ID " + fromNode + " doesn't exist");
+  //   }
+
+  //   if (!nodePresent(toNode)) {
+  //     throw new IllegalArgumentException("toNode with ID " + toNode + " doesn't exist");
+  //   }
+
+  //   int fromNodeIndex = getNodeIndex(fromNode);
+  //   int toNodeIndex = getNodeIndex(toNode);
+  //   return edges[fromNodeIndex][toNodeIndex] != Integer.MAX_VALUE; // Assuming Integer.MAX_VALUE indicates no edge
+  // }
 }

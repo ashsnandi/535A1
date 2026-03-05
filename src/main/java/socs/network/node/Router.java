@@ -1,5 +1,6 @@
 package socs.network.node;
 
+import socs.network.message.LSA;
 import socs.network.message.LinkDescription;
 import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
@@ -117,10 +118,8 @@ public class Router {
    *
    * @param portNumber the port number which the link attaches at
    */
-  private void processDisconnect(short portNumber) {
+  private void processDisconnect(int portNumber) {
     // disconnect the link at the given port number
-    // IMPLEMENT PA2: DISCONNECT AND FLOOD LSA UPDATE AFTER DISCONNECTION.
-
 
     // find port number
       if (portNumber < 0 || portNumber >= ports.length) {
@@ -132,15 +131,16 @@ public class Router {
         System.out.println("No link attached at port " + portNumber);
         return;
       }
-      // Remove the link from the ports array
-      ports[portNumber] = null;
-      // Update local LSA to remove this link and flood the change to neighbors
+      // Update local LSA to remove this link BEFORE clearing the port
+      // this way the flooding still guaranteed to reach the disconnected neighbor 
       socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
       if (self != null) {
         self.links.removeIf(ld -> ld.portNum == portNumber);
         self.lsaSeqNumber++;
-        floodLsaUpdate(null);
+        floodLsaUpdate(null); // R2 still in ports[] so recieves update
       }
+      // Now removing link from port completing the disconnection
+      ports[portNumber] = null;
       
   }
 
@@ -445,6 +445,11 @@ public class Router {
    * disconnect with all neighbors and quit the program
    */
   private void processQuit() {
+    for (int i = 0; i < ports.length; i++) {
+      if (ports[i] != null) {
+        processDisconnect(i);
+      }
+    }
     networkLayer.stop(); // stop the main router
   }
 
@@ -871,7 +876,7 @@ public class Router {
         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
         SOSPFPacket lsaUpdate = new SOSPFPacket();
 
-        // Set packet fields for LSA update
+        // Set packet fields for LSA update using the local Link State Database
         lsaUpdate.lsaArray = new Vector<>(lsd._store.values());
 
         // Set rest of the normal packet fields 
@@ -908,7 +913,7 @@ public class Router {
     }
 
     // boolean for tracking whether we need to flood updates to neighbors after merging the incoming new LSAs
-    boolean finished = false;
+    boolean needToFlood = false;
 
     Vector<socs.network.message.LSA> incomingLsaArray = packet.lsaArray;
     for (socs.network.message.LSA newLsa : incomingLsaArray) {
@@ -921,17 +926,90 @@ public class Router {
       socs.network.message.LSA current = lsd._store.get(newLsa.linkStateID);
 
       // Merge new LSA if newer
+      // This also handles deletions because the new LSA can have empty/null links, effectively deleting the entry 
       if (current == null || newLsa.lsaSeqNumber > current.lsaSeqNumber) {
         lsd._store.put(newLsa.linkStateID, newLsa);
         // Mark overall need to continue flooding to neighbors
-        finished = true;
+        needToFlood = true;
       }
     }
 
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // If a neighbor's LSA doesn't list us anymore then we'll treat it as a disconnect remove the link
+    // Remember rd is our router description and rd.simulatedIPAddress is our router ID which is going to be listed in neighbor's LSA if we're still connected
+    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+
+    if (self == null) {
+      // Should never happen, but good check so we don't get nullpointer exceptions in the loop below 
+      System.out.println("Self LSA is missing after merging updates, investigate");
+      return;
+    }
+
+    // For loop to check each neighbor in our ports array and see if they still list us as a neighbor in their LSA. Remove if not
+    for (int i = 0; i < ports.length; i++) {
+      Link currentPort = ports[i];
+      // checking if the current port and neighbor info is valid
+      if (currentPort == null || currentPort.router2 == null || currentPort.router2.simulatedIPAddress == null) {
+        continue;
+      }
+
+      // Get the neighbor's LSA from the lsd using the neighbor's simulated IP as the linkStateID
+      String neighborIP = currentPort.router2.simulatedIPAddress;
+      socs.network.message.LSA neighborLsa = lsd._store.get(neighborIP);
+
+      // Neighbor has effectively disconnected if its latest LSA no longer contains a link back to us.
+      boolean neighborRemovedMe = !neighborListsMe(neighborLsa, rd.simulatedIPAddress);
+      if (!neighborRemovedMe) {
+        // Neighbor still lists us so skip this link
+        continue;
+      }
+
+      // Mirror the disconnect locally by dropping the port.
+      System.out.println(neighborIP + " removed us so we're going to remove them too");
+      // Actual removal of the link from our ports array
+      ports[i] = null;
+      // Remove the neighbor from our local LSA links as well since we're treating this as a disconnect. iterating to find matching neighbor IP and remove it from list of links in our LSA
+      for (int j = 0; j < self.links.size(); j++) {
+        socs.network.message.LinkDescription givenLink = self.links.get(j);
+        if (neighborIP.equals(givenLink.linkID)) {
+          self.links.remove(j);
+          j--; // stay at same index after removal
+        }
+      }
+      self.lsaSeqNumber++;
+      needToFlood = true;
+    }
+
     // If any LSAs were updated, flood the updates to all TWO_WAY neighbors
-    if (finished) {
+    if (needToFlood) {
       floodLsaUpdate(packet.srcIP);
     }
   }
+
+  // Helper to check if the neighbor's LSA still lists us as a neighbor -- looking for our simulated IP in their links
+  private boolean neighborListsMe(socs.network.message.LSA neighborLsa, String selfIp) {
+    // Check for null or malformed LSA before trying to access its fields
+    if (neighborLsa == null) {
+      System.out.println("Neighbor LSA is null, investigate");
+      return false;
+    }
+    // Check for null links array in the LSA before iterating over it
+    if (neighborLsa.links == null) {
+      System.out.println("Neighbor LSA links are null, investigate");
+      return false;
+    }
+    // Check for null self IP before trying to compare it with the neighbor's links (this would be an issue witht the param passed in)
+    if (selfIp == null) {
+      System.out.println("Self IP is null, investigate");
+      return false;
+    }
+
+    for (socs.network.message.LinkDescription link : neighborLsa.links) {
+      if (link != null && selfIp.equals(link.linkID)) {
+        return true;
+      }
+    }
+  return false;
+}
 
 }

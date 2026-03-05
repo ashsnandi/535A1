@@ -19,7 +19,8 @@ public class LinkStateDatabase {
   //linkID => LSAInstance
   HashMap<String, LSA> _store = new HashMap<String, LSA>();
 
-  WeighedGraph graph = new WeighedGraph();
+  // CURRENTLY NOT USING WEIGHED GRAPH CLASS, BUT KEEPING IN CASE WE DECIDE TO USE IT LATER
+  //WeighedGraph graph = new WeighedGraph();
 
   private RouterDescription rd = null;
 
