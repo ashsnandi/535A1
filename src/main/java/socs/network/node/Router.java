@@ -151,7 +151,13 @@ public class Router {
    * <p/>
    * NOTE: this command should not trigger link database synchronization
    */
-  private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {         
+  private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {   
+    // Check if already attached to avoid duplicate connection which opens another socket unnecessarily      
+    if (findLinkBySimulatedIP(simulatedIP) != null) {
+      System.out.println("Attachment to " + simulatedIP + " already exists");
+      return;
+    }
+
     // figure out process port
     int port_slot = -1;
     for (int i = 0; i < ports.length; i++) {
@@ -952,10 +958,18 @@ public class Router {
       if (currentPort == null || currentPort.router2 == null || currentPort.router2.simulatedIPAddress == null) {
         continue;
       }
+      // make sure neighbor is TWO_WAY since we only consider it a disconnect if a TWO_WAY neighbor removes us
+      if (currentPort.router2.status != RouterStatus.TWO_WAY) {
+        continue;
+      }
 
       // Get the neighbor's LSA from the lsd using the neighbor's simulated IP as the linkStateID
       String neighborIP = currentPort.router2.simulatedIPAddress;
+      // Moving Lsa == null check here since we would need to actually skip the rest of this loop if the neighbor's LSA is missing
       socs.network.message.LSA neighborLsa = lsd._store.get(neighborIP);
+      if (neighborLsa == null || neighborLsa.links == null) {
+        continue;
+      }
 
       // Neighbor has effectively disconnected if its latest LSA no longer contains a link back to us.
       boolean neighborRemovedMe = !neighborListsMe(neighborLsa, rd.simulatedIPAddress);
@@ -988,19 +1002,17 @@ public class Router {
 
   // Helper to check if the neighbor's LSA still lists us as a neighbor -- looking for our simulated IP in their links
   private boolean neighborListsMe(socs.network.message.LSA neighborLsa, String selfIp) {
-    // Check for null or malformed LSA before trying to access its fields
-    if (neighborLsa == null) {
-      System.out.println("Neighbor LSA is null, investigate");
-      return false;
-    }
-    // Check for null links array in the LSA before iterating over it
-    if (neighborLsa.links == null) {
-      System.out.println("Neighbor LSA links are null, investigate");
-      return false;
-    }
+    // Unecessary since we handle these checks in the higher loop
+    // // Check for null or malformed LSA before trying to access its fields
+    // if (neighborLsa == null) {
+    //   return false;
+    // }
+    // // Check for null links array in the LSA before iterating over it
+    // if (neighborLsa.links == null) {
+    //   return false;
+    // }
     // Check for null self IP before trying to compare it with the neighbor's links (this would be an issue witht the param passed in)
     if (selfIp == null) {
-      System.out.println("Self IP is null, investigate");
       return false;
     }
 
