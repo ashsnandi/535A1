@@ -21,37 +21,22 @@ public class Router {
   protected LinkStateDatabase lsd;
 
   RouterDescription rd = new RouterDescription();
-  private final NetworkLayer networkLayer; // new class - for threading
-  // Setting a default link weight for new links
+  private final NetworkLayer networkLayer;
   private final int defaultLinkWeight = 1;
 
-  //assuming that all routers are with 4 ports
   Link[] ports = new Link[4];
 
-  // deadlock fix -- A single BufferedReader wraps System.in. Only the main terminal
-  // thread should call readLine() on this because if a background thread also reads from
-  // System.in, the two threads race and steal each other's input.
   private BufferedReader inputReader = new BufferedReader(new InputStreamReader(System.in));
 
-  // deadlock fix -- When a background requestHandler thread receives an attach HELLO
-  // from a new neighbor, it cannot prompt Y/N itself (stdin race). Instead it
-  // enqueues a PendingRequest here and blocks. The main terminal thread polls this
-  // queue, prompts Y/N safely, and signals the result back via the latch.
-  // The latch is a blocking synchronization primitive 
-  // This prevents a race condition where multiple threads would try to read from System.in simultaneously,
-  // which would cause input theft and deadlock.
-  private ConcurrentLinkedQueue<PendingRequest> pRequests = new ConcurrentLinkedQueue<>();
+  // Background threads enqueue attach requests here; terminal thread prompts Y/N to avoid stdin races
+  private ConcurrentLinkedQueue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
 
-  // Holds a pending attach request so the main thread can prompt Y/N while the socket stays open
   private static class PendingRequest {
     SOSPFPacket helloMsg;
     Socket socket;
     ObjectOutputStream out;
-    // The 'approved' field is set by the main thread after prompting Y/N, and read by the background thread to decide whether to accept or reject the attach request
     boolean approved;
-    // The latch starts at 1, meaning the background thread will block on latch.await() until the main thread calls latch.countDown() after setting 'approved'
-    // So basically the user decides
-    CountDownLatch cdlatch = new CountDownLatch(1); 
+    CountDownLatch latch = new CountDownLatch(1); 
 
     PendingRequest(SOSPFPacket helloMsg, Socket socket, ObjectOutputStream out) {
       this.helloMsg = helloMsg;
@@ -61,24 +46,18 @@ public class Router {
   }
 
   public Router(Configuration config) {
-    // Initialize RouterDescription from configuration
     rd.simulatedIPAddress = config.getString("socs.network.router.ip");
-    // Default to localhost if not specified since we will be testing all routers on local machine
     rd.processIPAddress = "127.0.0.1";
 
-    // Override process IP if specified in config
     try {
       rd.processIPAddress = config.getString("socs.network.router.processIP");
     } catch (Exception ignored) {
     }
 
-    // Default port number to 0 (invalid) if not specified, will be set to config value when starting server
     rd.processPortNumber = 0;
     try {
       rd.processPortNumber = config.getShort("socs.network.router.port");
     } catch (Exception numberReadError) {
-      // Some configs provide the port as a quoted string (e.g., "32001").
-      // Fall back to parsing the string value to avoid silently binding to a random port.
       try {
         rd.processPortNumber = Short.parseShort(config.getString("socs.network.router.port"));
       } catch (Exception stringReadError) {
@@ -86,7 +65,6 @@ public class Router {
       }
     }
 
-    // Initialize Link State Database and Network Layer
     lsd = new LinkStateDatabase(rd);
     networkLayer = new NetworkLayer(this);
     try {
@@ -119,9 +97,6 @@ public class Router {
    * @param portNumber the port number which the link attaches at
    */
   private void processDisconnect(int portNumber) {
-    // disconnect the link at the given port number
-
-    // find port number
       if (portNumber < 0 || portNumber >= ports.length) {
         System.out.println("Invalid port number. Must be between 0 and " + (ports.length - 1));
         return;
@@ -131,16 +106,13 @@ public class Router {
         System.out.println("No link attached at port " + portNumber);
         return;
       }
-      // Update local LSA to remove this link BEFORE clearing the port
-      // this way the flooding still guaranteed to reach the disconnected neighbor 
-      socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
-      if (self != null) {
-        self.links.removeIf(ld -> ld.portNum == portNumber);
-        self.lsaSeqNumber++;
-        floodLsaUpdate(null); // R2 still in ports[] so recieves update
-      }
-      // Now removing link from port completing the disconnection
+      String neighborIp = link.router2 != null ? link.router2.simulatedIPAddress : null;
+      sendDisconnectNotification(link);
       ports[portNumber] = null;
+      boolean removed = removeNeighborFromSelfLsa(neighborIp, portNumber);
+      if (removed) {
+        floodLsaUpdate(neighborIp);
+      }
       
   }
 
@@ -152,55 +124,47 @@ public class Router {
    * NOTE: this command should not trigger link database synchronization
    */
   private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {   
-    // Check if already attached to avoid duplicate connection which opens another socket unnecessarily      
+    if (weight <= 0) {
+      System.out.println("Invalid weight (must be > 0): " + weight);
+      return;
+    }
+
     if (findLinkBySimulatedIP(simulatedIP) != null) {
       System.out.println("Attachment to " + simulatedIP + " already exists");
       return;
     }
 
-    // figure out process port
     int port_slot = -1;
     for (int i = 0; i < ports.length; i++) {
       if (ports[i] == null) {
         port_slot = i;
         break;
-      } // find an open port
+      }
     }
     if (port_slot == -1) {
       System.err.println("All ports are full.");
       return;
     }
 
-    // Establish the socket connection to the remote router and perform HELLO handshake
     try (Socket socket = new Socket(processIP, processPort)) {
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-      out.flush(); // flush OOS header to avoid deadlock
-      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-      
-      // create hello packet
-      SOSPFPacket hello = new SOSPFPacket();
-      hello.sospfType = 0; // HELLO
-      hello.srcProcessIP = rd.processIPAddress;
-      hello.srcProcessPort = rd.processPortNumber;
-      hello.srcIP = rd.simulatedIPAddress;
-      hello.dstIP = simulatedIP;
-      hello.neighborID = rd.simulatedIPAddress;
-      hello.linkWeight = weight;
-      
-      out.writeObject(hello); // write to socket stream
       out.flush();
-      
-      // Block waiting for accept/reject response
-      // Handles on the same outgoing socket since the remote router will reply on the same socket connection
+      ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+
+      SOSPFPacket hello = buildHelloPacket(simulatedIP);
+      hello.linkWeight = weight;
+
+      out.writeObject(hello);
+      out.flush();
+
       SOSPFPacket response = (SOSPFPacket) in.readObject();
-      
-      if (response.sospfType == 0) { // Accepted (HELLO response)
-        // null status for link
+
+      if (response.sospfType == 0) {
         RouterDescription rd1 = new RouterDescription();
         rd1.processIPAddress = processIP;
         rd1.processPortNumber = processPort;
         rd1.simulatedIPAddress = simulatedIP;
-        rd1.status = RouterStatus.INIT; // Set neighbor status to INIT upon attachment
+        rd1.status = RouterStatus.INIT;
         System.out.println("set " + simulatedIP + " STATE to INIT;");
         Link newLink = new Link(rd, rd1, port_slot, weight);
         ports[port_slot] = newLink;
@@ -222,16 +186,17 @@ public class Router {
    */
   void requestHandler(Socket socket) {
     try (Socket s = socket) {
-      // Creating ObjectOutputStream before ObjectInputStream to avoid deadlock (both sides waiting for OOS header)
       ObjectOutputStream out = new ObjectOutputStream(s.getOutputStream());
-      out.flush(); // flush OOS header BEFORE creating OIS to avoid deadlock
+      out.flush();
       ObjectInputStream in = new ObjectInputStream(s.getInputStream());
 
-      // Block waiting for incoming HELLO packet
       SOSPFPacket packet = (SOSPFPacket) in.readObject();
-      // LSA updates are merged into the local LSD and then re-flooded.
       if (packet.sospfType == 1) {
         handleLsaUpdate(packet);
+        return;
+      }
+      if (packet.sospfType == 2) {
+        handleDisconnectPacket(packet);
         return;
       }
       if (packet.sospfType == 4) {
@@ -242,28 +207,20 @@ public class Router {
         return;
       }
 
-      // Deserialize incoming HELLO packet
       SOSPFPacket hello = packet;
       System.out.println("received HELLO from " + hello.srcIP + ";");
 
-      // Check if the incoming HELLO is from an existing neighbor
       Link existingLink = findLinkBySimulatedIP(hello.srcIP);
       if (existingLink != null) {
         handleHelloForExistingLink(existingLink, out);
-        // Send back HELLO response to acknowledge the existing neighbor  
         return;
       }
 
-      // New neighbor will queue the request for the main terminal thread to prompt Y/N
-      // We keep the socket open; the background thread blocks until the main thread decides
       PendingRequest pRequest = new PendingRequest(hello, s, out);
-      pRequests.add(pRequest);
-
-      // We then block this thread until the terminal thread processes the Y/N
-      pRequest.cdlatch.await();
+      pendingRequests.add(pRequest);
+      pRequest.latch.await();
 
       if (pRequest.approved) {
-        // Find available port
         int portSlot = -1;
         synchronized (ports) {
           for (int i = 0; i < ports.length; i++) {
@@ -283,7 +240,6 @@ public class Router {
           return;
         }
 
-        // Create Link for the new neighbor
         RouterDescription rd2 = new RouterDescription();
         rd2.processIPAddress = hello.srcProcessIP;
         rd2.simulatedIPAddress = hello.srcIP;
@@ -298,22 +254,12 @@ public class Router {
           ports[portSlot] = newLink;
         }
 
-        // Send acceptance
-        SOSPFPacket accept = new SOSPFPacket();
-        accept.sospfType = 0;
-        accept.srcIP = rd.simulatedIPAddress;
-        accept.srcProcessIP = rd.processIPAddress;
-        accept.srcProcessPort = rd.processPortNumber;
-        accept.dstIP = hello.srcIP;
+        SOSPFPacket accept = buildHelloPacket(hello.srcIP);
         out.writeObject(accept);
         out.flush();
         System.out.println("accepted attach request from " + hello.srcIP);
       } else {
-        // Send rejection
-        SOSPFPacket reject = new SOSPFPacket();
-        reject.sospfType = -1;
-        out.writeObject(reject);
-        out.flush();
+        sendReject(out);
         System.out.println("rejected attach request from " + hello.srcIP);
       }
     } catch (IOException | ClassNotFoundException | InterruptedException e) {
@@ -326,32 +272,20 @@ public class Router {
   }
 
   private void processStart() {
-    // IMPLEMENT PA2: FLOOD LSAUPDATE AFTER START.
-
-    // Send Hello packet to all attached links
     for (Link link : ports) {
       if (link != null) {
         try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber)) {
           ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-          out.flush(); // flush OOS header to avoid deadlock
+          out.flush();
           ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-          
-          // Send HELLO packet
-          SOSPFPacket hello = new SOSPFPacket();
-          hello.sospfType = 0; // HELLO
-          hello.srcProcessIP = rd.processIPAddress;
-          hello.srcProcessPort = rd.processPortNumber;
-          hello.srcIP = rd.simulatedIPAddress;
-          hello.dstIP = link.router2.simulatedIPAddress;
-          hello.neighborID = rd.simulatedIPAddress;
-          
+
+          SOSPFPacket hello = buildHelloPacket(link.router2.simulatedIPAddress);
           out.writeObject(hello);
           out.flush();
-          
-          // Wait for HELLO response
+
           SOSPFPacket response = (SOSPFPacket) in.readObject();
-          
-          if (response.sospfType == 0) { // HELLO response received
+
+          if (response.sospfType == 0) {
             if (link.router2.status != RouterStatus.TWO_WAY) {
               link.router2.status = RouterStatus.TWO_WAY;
               System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
@@ -363,10 +297,25 @@ public class Router {
         }
       }
     }
-
-    // Flood the full link-state database to every TWO_WAY neighbor so the
-    // network converges after all HELLO handshakes have completed.
     floodLsaUpdate(null);
+  }
+
+  private SOSPFPacket buildHelloPacket(String dstIP) {
+    SOSPFPacket hello = new SOSPFPacket();
+    hello.sospfType = 0;
+    hello.srcProcessIP = rd.processIPAddress;
+    hello.srcProcessPort = rd.processPortNumber;
+    hello.srcIP = rd.simulatedIPAddress;
+    hello.dstIP = dstIP;
+    hello.neighborID = rd.simulatedIPAddress;
+    return hello;
+  }
+
+  private void sendReject(ObjectOutputStream out) throws IOException {
+    SOSPFPacket reject = new SOSPFPacket();
+    reject.sospfType = -1;
+    out.writeObject(reject);
+    out.flush();
   }
 
   /**
@@ -427,7 +376,6 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-    // IMPLEMENT PA2: ATTACH, START, AND FLOOD HERE. Flooding happens as part of processStart() 
     processAttach(processIP, processPort, simulatedIP, weight);
     processStart();
   }
@@ -447,25 +395,17 @@ public class Router {
     }
   }
 
-  /**
-   * disconnect with all neighbors and quit the program
-   */
   private void processQuit() {
     for (int i = 0; i < ports.length; i++) {
       if (ports[i] != null) {
         processDisconnect(i);
       }
     }
-    networkLayer.stop(); // stop the main router
+    networkLayer.stop();
   }
 
-  /**
-   * update the weight of an attached link
-   */
   private void updateWeight(String processIP, short processPort,
                              String simulatedIP, short weight){
-    // IMPLEMENT PA2: UPDATE THE COST AND FLOOD IT.
-
   }
 
   /**
@@ -477,7 +417,6 @@ public class Router {
    * @param newWeight the new weight/cost for the link attached to this port
    */
   private void processUpdate(short portNumber, short newWeight) {
-    // IMPLEMENT PA2: CHANGE THE PORT WEIGHT AND FLOOD IT.
   }
 
   /**
@@ -548,14 +487,12 @@ public class Router {
     if (packet.dstIP == null || packet.srcIP == null) {
       return;
     }
-    // Check if this router is the destination
     if (packet.dstIP.equals(rd.simulatedIPAddress)) {
       System.out.println("Received message from " + packet.srcIP + ";");
       System.out.println("Message: " + packet.message);
       return;
     }
 
-    // This router is an intermediate hop, forward the packet to the next hop on the shortest path
     System.out.println("Forwarding message from " + packet.srcIP + " to " + packet.dstIP);
     RouterDescription nextHop = getNextHop(packet.dstIP);
     if (nextHop == null) {
@@ -564,7 +501,6 @@ public class Router {
     }
     System.out.println("Next hop: " + nextHop.simulatedIPAddress);
 
-    // Open a new socket to the next hop for forwarding (not the incoming socket)
     try (Socket fwdSocket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
       ObjectOutputStream fwdOut = new ObjectOutputStream(fwdSocket.getOutputStream())) {
       sendPacket(packet, nextHop, fwdOut);
@@ -575,7 +511,6 @@ public class Router {
 
   public void terminal() {
     try {
-      // Use the dedicated stdinReader for the terminal thread to avoid conflicts with background threads that also need to read from System.in (e.g. for attach requests)
       BufferedReader bReader = inputReader;
       System.out.println("========================================");
       System.out.println("Process IP : " + rd.processIPAddress);
@@ -584,11 +519,9 @@ public class Router {
       System.out.println("========================================");
 
       while (true) {
-        // Poll: check for pending attach requests OR user input
-        processPendingRequests(bReader); 
+        processPendingRequests(bReader);
         if (bReader.ready()) {
 
-          // User input ready, read the command and process it
           String command = bReader.readLine();
           if (command == null) break;
           command = command.trim();
@@ -599,6 +532,8 @@ public class Router {
           if (command.equals("quit")) {
             processQuit();
             break;
+          } else if (command.equals("help")) {
+            printSupportedCommands();
           } else if (command.equals("start")) {
             processStart();
           } else if (command.equals("neighbors")) {
@@ -632,6 +567,10 @@ public class Router {
             if (processPort == null || weight == null) {
               continue;
             }
+            if (weight <= 0) {
+              System.out.println("Invalid weight (must be > 0): " + weight);
+              continue;
+            }
             processAttach(cmdLine[1], processPort, cmdLine[3], weight);
           } else if (command.startsWith("connect ")) {
             String[] cmdLine = command.split("\\s+");
@@ -642,6 +581,10 @@ public class Router {
             Short processPort = parseShortArg(cmdLine[2], "process_port");
             Short weight = parseShortArg(cmdLine[4], "weight");
             if (processPort == null || weight == null) {
+              continue;
+            }
+            if (weight <= 0) {
+              System.out.println("Invalid weight (must be > 0): " + weight);
               continue;
             }
             processConnect(cmdLine[1], processPort, cmdLine[3], weight);
@@ -666,11 +609,10 @@ public class Router {
             processUpdate(port, newWeight);
           } else {
             System.out.println("Unknown command: " + command);
-            System.out.println("Try: detect, disconnect, attach, connect, start, neighbors, send, update, quit");
+            printSupportedCommands();
           }
         } else {
-          // No input ready — sleep briefly to avoid busy-waiting
-          // console environment, stdin isn’t easily multiplexed with other events, so polling is a simple solution. 
+
           Thread.sleep(100);
         }
       }
@@ -688,27 +630,33 @@ public class Router {
     }
   }
 
-  // Drain pending attach requests, prompting Y/N for each on the main thread
-  private void processPendingRequests(BufferedReader bReader) {
-    PendingRequest pRequest;
+  private void printSupportedCommands() {
+    System.out.println("Supported commands:");
+    System.out.println("  help");
+    System.out.println("  start");
+    System.out.println("  neighbors");
+    System.out.println("  detect [Destination IP]");
+    System.out.println("  disconnect [port_number]");
+    System.out.println("  attach [Process IP] [Process Port] [Simulated IP] [Weight]");
+    System.out.println("  connect [Process IP] [Process Port] [Simulated IP] [Weight]");
+    System.out.println("  send [Destination IP] [Message]");
+    System.out.println("  quit");
+  }
 
-    // No point polling if queue is empty
-    if (pRequests.isEmpty()) {
+  private void processPendingRequests(BufferedReader bReader) {
+    if (pendingRequests.isEmpty()) {
       return;
     }
-    // We process pending requests sequentially on the main thread to safely prompt Y/N without racing on System.in. 
-    // Each request will block the background thread until the main thread processes it and signals via the latch.
-    while ((pRequest = pRequests.poll()) != null) { 
+    PendingRequest pRequest;
+    while ((pRequest = pendingRequests.poll()) != null) {
       try {
         System.out.println("Do you accept this request from " + pRequest.helloMsg.srcIP + "? (Y/N)");
-        // bReader.readline() is a blocking call
         String answer = bReader.readLine();
         while (answer != null && !(answer.equalsIgnoreCase("Y") || answer.equalsIgnoreCase("N"))) {
           System.out.println("Answer not accepted/invalid.");
           System.out.println("Do you accept this request? (Y/N)");
           answer = bReader.readLine();
         }
-        // Check the user's answer and set the 'accepted' field of the PendingRequest accordingly, which will be read by the background thread after latch is released
         if (answer.equalsIgnoreCase("Y")) {
           pRequest.approved = true;
         } else {
@@ -717,7 +665,7 @@ public class Router {
       } catch (IOException e) {
         pRequest.approved = false;
       }
-      pRequest.cdlatch.countDown(); // unblock the background thread by counting down from 1 to 0, allowing it to proceed
+      pRequest.latch.countDown();
     }
   }
 
@@ -743,7 +691,6 @@ public class Router {
     return null;
   }
 
-  // Handle incoming HELLO from an existing neighbor
   private void handleHelloForExistingLink(Link link, ObjectOutputStream out) {
     RouterStatus current = link.router2.status;
     if (current == null) {
@@ -755,17 +702,9 @@ public class Router {
       System.out.println("set " + link.router2.simulatedIPAddress + " state to TWO_WAY");
       updateLocalLsaForLink(link);
     }
-    
-    // Send HELLO response on the SAME socket
+
     try {
-      SOSPFPacket helloResponse = new SOSPFPacket();
-      helloResponse.sospfType = 0; // HELLO
-      helloResponse.srcProcessIP = rd.processIPAddress;
-      helloResponse.srcProcessPort = rd.processPortNumber;
-      helloResponse.srcIP = rd.simulatedIPAddress;
-      helloResponse.dstIP = link.router2.simulatedIPAddress;
-      helloResponse.neighborID = rd.simulatedIPAddress;
-      
+      SOSPFPacket helloResponse = buildHelloPacket(link.router2.simulatedIPAddress);
       out.writeObject(helloResponse);
       out.flush();
     } catch (IOException e) {
@@ -773,21 +712,12 @@ public class Router {
     }
   }
 
-  /**
-   * Update (or add) a {@link LinkDescription} in this router's own LSA to
-   * reflect the current state of {@code link}, bump the sequence number, and
-   * flood the change to all TWO_WAY neighbors.
-   *
-   * @param link the local port whose weight / existence changed
-   */
   private void updateLocalLsaForLink(Link link) {
-    // Update local LSA for the link
     socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
     if (self == null) {
       return;
     }
 
-    // Check if the link already exists in the LSA, if so update it; if not, add a new LinkDescription for this link
     boolean found = false;
     for (socs.network.message.LinkDescription ld : self.links) {
       if (link.router2.simulatedIPAddress.equals(ld.linkID)) {
@@ -798,7 +728,6 @@ public class Router {
       }
     }
 
-    // If not found, add new LinkDescription for this link
     if (!found) {
       socs.network.message.LinkDescription ld = new socs.network.message.LinkDescription();
       ld.linkID = link.router2.simulatedIPAddress;
@@ -809,8 +738,6 @@ public class Router {
     }
 
     self.lsaSeqNumber++;
-
-    // Flood the updated LSA to all TWO_WAY neighbors
     floodLsaUpdate(null);
   }
 
@@ -852,49 +779,31 @@ public class Router {
     return null;
   }
 
-  /**
-   * Flooding our entire LSD to every TWO_WAY neighbor.
-   * In this implementation we can skip the neighbor who sent us the update to
-   * avoid inefficient echo. Each neighbor receives full copy of
-   * lsd._store inside a type-1 (LSA Update) packet.
-   *
-   * @param excludedNeighborIp simulated IP of a neighbor to skip, or
-   *                        null to flood to everyone
-   */
   private void floodLsaUpdate(String excludedNeighborIp) {
     for (Link link : ports) {
-      // Check if the link is valid and the neighbor is in TWO_WAY state before flooding
       if (link == null || link.router2.status != RouterStatus.TWO_WAY) {
         continue;
       }
-      // Check if the neighbor's simulated IP is null
       if (link.router2.simulatedIPAddress == null) {
         continue;
       }
-      // Check if this neighbor is to be excluded from flooding (sender of the update)
       if (excludedNeighborIp != null
           && excludedNeighborIp.equals(link.router2.simulatedIPAddress)) {
         continue;
       }
 
-      // Create new socket connection and send LSD as LSA packet with lsaArray containing all LSAs in the local database
       try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
         SOSPFPacket lsaUpdate = new SOSPFPacket();
-
-        // Set packet fields for LSA update using the local Link State Database
         lsaUpdate.lsaArray = new Vector<>(lsd._store.values());
-
-        // Set rest of the normal packet fields 
         lsaUpdate.sospfType = 1;
         lsaUpdate.srcProcessIP = rd.processIPAddress;
         lsaUpdate.srcProcessPort = rd.processPortNumber;
         lsaUpdate.srcIP = rd.simulatedIPAddress;
         lsaUpdate.dstIP = link.router2.simulatedIPAddress;
 
-        // Check if there are any LSAs to send as last check
         if (lsaUpdate.lsaArray.isEmpty()) {
-          continue; // No need to send empty updates
+          continue;
         }
 
         out.writeObject(lsaUpdate);
@@ -905,113 +814,46 @@ public class Router {
     }
   }
 
-  /**
-   * Merge incoming LSAs into the local database, keeping only entries with a
-   * higher sequence number.  If anything changed, re-flood to all TWO_WAY
-   * neighbors except the sender so the update propagates network-wide.
-   *
-   * @param packet the received type-1 (LSA Update) packet
-   */
   private void handleLsaUpdate(SOSPFPacket packet) {
-    // Check for null, malformed packets 
     if (packet == null || packet.lsaArray == null || packet.srcIP == null) {
       return;
     }
 
-    // boolean for tracking whether we need to flood updates to neighbors after merging the incoming new LSAs
     boolean needToFlood = false;
+    boolean sourceNeighborDroppedUs = false;
 
     Vector<socs.network.message.LSA> incomingLsaArray = packet.lsaArray;
     for (socs.network.message.LSA newLsa : incomingLsaArray) {
-      // Check for null or malformed LSA entries in the array before processing each LSA
       if (newLsa == null || newLsa.linkStateID == null) {
         continue;
       }
 
-      // Get current linkStateID for comparison
       socs.network.message.LSA current = lsd._store.get(newLsa.linkStateID);
 
-      // Merge new LSA if newer
-      // This also handles deletions because the new LSA can have empty/null links, effectively deleting the entry 
       if (current == null || newLsa.lsaSeqNumber > current.lsaSeqNumber) {
         lsd._store.put(newLsa.linkStateID, newLsa);
-        // Mark overall need to continue flooding to neighbors
+        needToFlood = true;
+
+        if (packet.srcIP.equals(newLsa.linkStateID)
+            && !neighborListsMe(newLsa, rd.simulatedIPAddress)) {
+          sourceNeighborDroppedUs = true;
+        }
+      }
+    }
+
+    if (sourceNeighborDroppedUs) {
+      boolean mirrored = mirrorNeighborDisconnect(packet.srcIP);
+      if (mirrored) {
         needToFlood = true;
       }
     }
 
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // If a neighbor's LSA doesn't list us anymore then we'll treat it as a disconnect remove the link
-    // Remember rd is our router description and rd.simulatedIPAddress is our router ID which is going to be listed in neighbor's LSA if we're still connected
-    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
-
-    if (self == null) {
-      // Should never happen, but good check so we don't get nullpointer exceptions in the loop below 
-      System.out.println("Self LSA is missing after merging updates, investigate");
-      return;
-    }
-
-    // For loop to check each neighbor in our ports array and see if they still list us as a neighbor in their LSA. Remove if not
-    for (int i = 0; i < ports.length; i++) {
-      Link currentPort = ports[i];
-      // checking if the current port and neighbor info is valid
-      if (currentPort == null || currentPort.router2 == null || currentPort.router2.simulatedIPAddress == null) {
-        continue;
-      }
-      // make sure neighbor is TWO_WAY since we only consider it a disconnect if a TWO_WAY neighbor removes us
-      if (currentPort.router2.status != RouterStatus.TWO_WAY) {
-        continue;
-      }
-
-      // Get the neighbor's LSA from the lsd using the neighbor's simulated IP as the linkStateID
-      String neighborIP = currentPort.router2.simulatedIPAddress;
-      // Moving Lsa == null check here since we would need to actually skip the rest of this loop if the neighbor's LSA is missing
-      socs.network.message.LSA neighborLsa = lsd._store.get(neighborIP);
-      if (neighborLsa == null || neighborLsa.links == null) {
-        continue;
-      }
-
-      // Neighbor has effectively disconnected if its latest LSA no longer contains a link back to us.
-      boolean neighborRemovedMe = !neighborListsMe(neighborLsa, rd.simulatedIPAddress);
-      if (!neighborRemovedMe) {
-        // Neighbor still lists us so skip this link
-        continue;
-      }
-
-      // Mirror the disconnect locally by dropping the port.
-      System.out.println(neighborIP + " removed us so we're going to remove them too");
-      // Actual removal of the link from our ports array
-      ports[i] = null;
-      // Remove the neighbor from our local LSA links as well since we're treating this as a disconnect. iterating to find matching neighbor IP and remove it from list of links in our LSA
-      for (int j = 0; j < self.links.size(); j++) {
-        socs.network.message.LinkDescription givenLink = self.links.get(j);
-        if (neighborIP.equals(givenLink.linkID)) {
-          self.links.remove(j);
-          j--; // stay at same index after removal
-        }
-      }
-      self.lsaSeqNumber++;
-      needToFlood = true;
-    }
-
-    // If any LSAs were updated, flood the updates to all TWO_WAY neighbors
     if (needToFlood) {
       floodLsaUpdate(packet.srcIP);
     }
   }
 
-  // Helper to check if the neighbor's LSA still lists us as a neighbor -- looking for our simulated IP in their links
   private boolean neighborListsMe(socs.network.message.LSA neighborLsa, String selfIp) {
-    // Unecessary since we handle these checks in the higher loop
-    // // Check for null or malformed LSA before trying to access its fields
-    // if (neighborLsa == null) {
-    //   return false;
-    // }
-    // // Check for null links array in the LSA before iterating over it
-    // if (neighborLsa.links == null) {
-    //   return false;
-    // }
-    // Check for null self IP before trying to compare it with the neighbor's links (this would be an issue witht the param passed in)
     if (selfIp == null) {
       return false;
     }
@@ -1021,7 +863,121 @@ public class Router {
         return true;
       }
     }
-  return false;
-}
+    return false;
+  }
+
+  private boolean mirrorNeighborDisconnect(String neighborIP) {
+    if (neighborIP == null) {
+      return false;
+    }
+
+    Link link = findLinkBySimulatedIP(neighborIP);
+    if (link == null || link.router2 == null || link.router2.status != RouterStatus.TWO_WAY) {
+      return false;
+    }
+
+    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+    if (self == null) {
+      return false;
+    }
+
+    System.out.println(neighborIP + " removed us so we're going to remove them too");
+
+    for (int i = 0; i < ports.length; i++) {
+      Link p = ports[i];
+      if (p != null && p.router2 != null && neighborIP.equals(p.router2.simulatedIPAddress)) {
+        ports[i] = null;
+        break;
+      }
+    }
+
+    boolean removedFromSelfLsa = false;
+    for (int i = 0; i < self.links.size(); i++) {
+      socs.network.message.LinkDescription ld = self.links.get(i);
+      if (neighborIP.equals(ld.linkID)) {
+        self.links.remove(i);
+        i--;
+        removedFromSelfLsa = true;
+      }
+    }
+
+    if (removedFromSelfLsa) {
+      self.lsaSeqNumber++;
+    }
+    return removedFromSelfLsa;
+  }
+
+  private boolean removeNeighborFromSelfLsa(String neighborIp, int portNumber) {
+    socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
+    if (self == null) {
+      return false;
+    }
+
+    boolean removed = false;
+    for (int i = 0; i < self.links.size(); i++) {
+      socs.network.message.LinkDescription ld = self.links.get(i);
+      if (ld == null) {
+        continue;
+      }
+      boolean sameNeighbor = neighborIp != null && neighborIp.equals(ld.linkID);
+      boolean samePort = portNumber >= 0 && ld.portNum == portNumber;
+      if (sameNeighbor || samePort) {
+        self.links.remove(i);
+        i--;
+        removed = true;
+      }
+    }
+
+    if (removed) {
+      self.lsaSeqNumber++;
+    }
+    return removed;
+  }
+
+  private void sendDisconnectNotification(Link link) {
+    if (link == null || link.router2 == null) {
+      return;
+    }
+
+    try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber);
+         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+      SOSPFPacket disconnect = new SOSPFPacket();
+      disconnect.sospfType = 2;
+      disconnect.srcProcessIP = rd.processIPAddress;
+      disconnect.srcProcessPort = rd.processPortNumber;
+      disconnect.srcIP = rd.simulatedIPAddress;
+      disconnect.dstIP = link.router2.simulatedIPAddress;
+      out.writeObject(disconnect);
+      out.flush();
+    } catch (IOException e) {
+      System.err.println("Failed to notify " + link.router2.simulatedIPAddress + " about disconnect");
+    }
+  }
+
+  private void handleDisconnectPacket(SOSPFPacket packet) {
+    if (packet == null || packet.srcIP == null) {
+      return;
+    }
+
+    String neighborIp = packet.srcIP;
+    boolean removedPort = false;
+    int removedPortNumber = -1;
+
+    for (int i = 0; i < ports.length; i++) {
+      Link existing = ports[i];
+      if (existing != null && existing.router2 != null
+          && neighborIp.equals(existing.router2.simulatedIPAddress)) {
+        ports[i] = null;
+        removedPort = true;
+        removedPortNumber = i;
+        break;
+      }
+    }
+
+    boolean removedFromLsa = removeNeighborFromSelfLsa(neighborIp, removedPortNumber);
+    if (removedPort || removedFromLsa) {
+      floodLsaUpdate(neighborIp);
+    }
+  }
 
 }

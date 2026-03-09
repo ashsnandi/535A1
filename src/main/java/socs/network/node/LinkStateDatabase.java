@@ -144,6 +144,12 @@ public class LinkStateDatabase {
         }
 
         String nextNode = link.linkID;
+        if (id.equals(nextNode)) {
+          continue;
+        }
+        if (!hasReciprocalLink(id, nextNode)) {
+          continue;
+        }
         if (!distance.containsKey(nextNode)) {
           distance.put(nextNode, Integer.MAX_VALUE);
           parent.put(nextNode, null);
@@ -189,6 +195,20 @@ public class LinkStateDatabase {
       }
     }
     return null;
+  }
+
+  private boolean hasReciprocalLink(String from, String to) {
+    LSA toLsa = _store.get(to);
+    if (toLsa == null || toLsa.links == null) {
+      return false;
+    }
+
+    for (LinkDescription backLink : toLsa.links) {
+      if (backLink != null && from.equals(backLink.linkID)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   //initialize the linkstate database by adding an entry about the router itself

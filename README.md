@@ -17,6 +17,11 @@ attach [Process IP] [Process Port] [Simulated IP] [Weight]
 
 start
 	- Sends HELLO to all attached neighbors to reach TWO_WAY state.
+	- Floods LSAUPDATE information so Link State Databases synchronize (PA2).
+
+connect [Process IP] [Process Port] [Simulated IP] [Weight]
+	- Convenience command: runs `attach` then `start`.
+	- Effectively establishes the link (if accepted) and immediately triggers HELLO + LSD synchronization.
 
 neighbors
 	- Prints current neighbor simulated IPs from the local LSA.
@@ -43,10 +48,10 @@ Using `send`
 
 If no route exists in the current Link State Database, the source prints `Path not found`.
 
-connect [Process IP] [Process Port] [Simulated IP] [Weight]
 disconnect [port_number]
 update [port_number] [new_weight]
-	- These commands are wired in the CLI but the implementations are currently stubs.
+	- `disconnect` is implemented.
+	- `update` is wired in the CLI but currently a stub.
 
 quit
 	- Stops the listener and exits.
@@ -57,4 +62,9 @@ Implementation Details
 - A pending-request queue avoids System.in race conditions: background threads enqueue attach requests, the terminal thread prompts Y/N, then releases the handler.
 - attach performs a HELLO handshake on the outgoing socket and creates a Link with neighbor status INIT on success.
 - start sends HELLO to each attached link, promotes neighbors to TWO_WAY, and updates the local LSA entry for the link.
+- LSA flooding: each type-1 LSAUPDATE packet carries the router’s full local LSD (`lsaArray = all LSAs in store`) and is sent to all TWO_WAY neighbors.
+- LSA merge policy: on receive, LSAs are accepted only if sequence number is newer than the local copy; if any entry changes, updates are re-flooded to all TWO_WAY neighbors except the sender.
+- Disconnect propagation: if a TWO_WAY neighbor’s latest LSA no longer lists this router, the local port/link is removed, local LSA is incremented, and the change is flooded.
+- Dijkstra (for `detect` and `send` next-hop): shortest path is computed over weighted links using a priority queue, distance map, and parent map (weight-based, not hop-count based).
+- Path rendering for `detect`: output includes per-edge weights in the displayed path (e.g., `A -> (w) B -> (w) C`).
 - send forwards application messages hop-by-hop: intermediate routers log forwarding, and the destination logs the received message.
