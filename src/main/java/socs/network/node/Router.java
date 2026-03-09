@@ -477,7 +477,31 @@ public class Router {
    * @param newWeight the new weight/cost for the link attached to this port
    */
   private void processUpdate(short portNumber, short newWeight) {
-    // IMPLEMENT PA2: CHANGE THE PORT WEIGHT AND FLOOD IT.
+
+    // validate input and link existence
+    if (portNumber < 0 || portNumber >= ports.length) {
+      System.out.println("Choose a valid port number (0-3)");
+      return;
+    }
+    if (newWeight <= 0) {
+      System.out.println("Input a positive weight value. Dijkstra's algorithm does not work with zero or negative weight.");
+      return;
+    }
+
+    // getting the link on the specified port number
+    // set l after checking the port number is valid to avoid ArrayIndexOutOfBoundsException
+    Link l = ports[portNumber];
+
+    if (l == null) {
+      System.out.println("No link attached at port " + portNumber);
+      return;
+    }
+
+    // tests passed. updating weight and flooding update to neighbors
+    l.weight = newWeight;
+
+    System.out.println("Broadcasting LSAUPDATE");
+    updateLocalLsaForLink(l);
   }
 
   /**
@@ -943,6 +967,7 @@ public class Router {
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // If a neighbor's LSA doesn't list us anymore then we'll treat it as a disconnect remove the link
     // Remember rd is our router description and rd.simulatedIPAddress is our router ID which is going to be listed in neighbor's LSA if we're still connected
+    // Also a quick update to link weight if the neighbor is still listing us but with a different weight than what we have locally
     socs.network.message.LSA self = lsd._store.get(rd.simulatedIPAddress);
 
     if (self == null) {
@@ -969,6 +994,15 @@ public class Router {
       socs.network.message.LSA neighborLsa = lsd._store.get(neighborIP);
       if (neighborLsa == null || neighborLsa.links == null) {
         continue;
+      }
+
+      // Quick check to see if we need to update the given neighbor's link weight based on their LSA (link weight to us)
+      int weightToSelf = getWeightToSelf(neighborLsa, rd.simulatedIPAddress);
+      if (weightToSelf > 0 && weightToSelf != currentPort.weight) {
+        // Nighbor has updated the weight of the link to us
+        currentPort.weight = weightToSelf;
+        // Update our local LSA to reflect the new weight from the neighbor's LSA and flood the update to neighbors
+        updateLocalLsaForLink(currentPort);
       }
 
       // Neighbor has effectively disconnected if its latest LSA no longer contains a link back to us.
@@ -1022,6 +1056,21 @@ public class Router {
       }
     }
   return false;
+}
+
+private int getWeightToSelf(LSA neighboringLSA, String myIP) {
+  if (neighboringLSA == null || neighboringLSA.links == null || myIP == null) {
+    System.out.println("Invalid input to getWeightToSelf");
+    return -1; // Invalid input
+  }
+  for (socs.network.message.LinkDescription ldes : neighboringLSA.links) {
+    if (ldes != null) {
+      if (myIP.equals(ldes.linkID)) {
+        return ldes.weight;
+      }
+    }
+  }
+  return -1; // Not found
 }
 
 }
