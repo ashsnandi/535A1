@@ -26,8 +26,7 @@ public class SOSPFPacket implements Serializable {
   //used by LSAUPDATE
   public Vector<LSA> lsaArray = null;
 
-  //used by Application Message
-  // IMPLEMENT PA2: RENAME THIS TO appMessage.
+  // used by Application Message
   public String message; //user inputted message payload
 
   //used by HELLO attach handshake to communicate the link cost

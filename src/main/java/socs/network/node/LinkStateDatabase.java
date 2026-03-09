@@ -11,16 +11,10 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Set;
-
-
-
 public class LinkStateDatabase {
 
-  //linkID => LSAInstance
-  HashMap<String, LSA> _store = new HashMap<String, LSA>();
-
-  // CURRENTLY NOT USING WEIGHED GRAPH CLASS, BUT KEEPING IN CASE WE DECIDE TO USE IT LATER
-  //WeighedGraph graph = new WeighedGraph();
+  // linkID => LSA instance
+  HashMap<String, LSA> _store = new HashMap<>();
 
   private RouterDescription rd = null;
 
@@ -144,6 +138,12 @@ public class LinkStateDatabase {
         }
 
         String nextNode = link.linkID;
+        if (id.equals(nextNode)) {
+          continue;
+        }
+        if (!hasReciprocalLink(id, nextNode)) {
+          continue;
+        }
         if (!distance.containsKey(nextNode)) {
           distance.put(nextNode, Integer.MAX_VALUE);
           parent.put(nextNode, null);
@@ -189,6 +189,20 @@ public class LinkStateDatabase {
       }
     }
     return null;
+  }
+
+  private boolean hasReciprocalLink(String from, String to) {
+    LSA toLsa = _store.get(to);
+    if (toLsa == null || toLsa.links == null) {
+      return false;
+    }
+
+    for (LinkDescription backLink : toLsa.links) {
+      if (backLink != null && from.equals(backLink.linkID)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   //initialize the linkstate database by adding an entry about the router itself

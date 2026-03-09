@@ -8,8 +8,13 @@ JAR="target/COMP535-1.0-SNAPSHOT-jar-with-dependencies.jar"
 
 if [[ ! -f "$JAR" ]]; then
   echo "Jar not found: $JAR"
-  echo "Build first with: mvn clean package"
-  exit 1
+  echo "Building with: mvn -q clean package assembly:single"
+  mvn -q clean package assembly:single
+fi
+
+if [[ pom.xml -nt "$JAR" ]] || find src conf -type f -newer "$JAR" | grep -q .; then
+  echo "Project changed since last jar build. Rebuilding runnable jar..."
+  mvn -q clean package assembly:single
 fi
 
 launch_router() {
