@@ -11,16 +11,10 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.PriorityQueue;
 import java.util.Set;
-
-
-
 public class LinkStateDatabase {
 
-  //linkID => LSAInstance
-  HashMap<String, LSA> _store = new HashMap<String, LSA>();
-
-  // CURRENTLY NOT USING WEIGHED GRAPH CLASS, BUT KEEPING IN CASE WE DECIDE TO USE IT LATER
-  //WeighedGraph graph = new WeighedGraph();
+  // linkID => LSA instance
+  HashMap<String, LSA> _store = new HashMap<>();
 
   private RouterDescription rd = null;
 

@@ -50,11 +50,11 @@ If no route exists in the current Link State Database, the source prints `Path n
 
 disconnect [port_number]
 update [port_number] [new_weight]
-	- `disconnect` is implemented.
+	- `disconnect` is implemented and sends a type-2 DISCONNECT packet to the neighbor before removing the local link.
 	- `update` is wired in the CLI but currently a stub.
 
 quit
-	- Stops the listener and exits.
+	- Sends DISCONNECT packets for all active links (same behavior as running `disconnect` on each occupied port), then stops the listener and exits.
 
 Implementation Details
 
@@ -65,6 +65,7 @@ Implementation Details
 - LSA flooding: each type-1 LSAUPDATE packet carries the router’s full local LSD (`lsaArray = all LSAs in store`) and is sent to all TWO_WAY neighbors.
 - LSA merge policy: on receive, LSAs are accepted only if sequence number is newer than the local copy; if any entry changes, updates are re-flooded to all TWO_WAY neighbors except the sender.
 - Disconnect propagation: if a TWO_WAY neighbor’s latest LSA no longer lists this router, the local port/link is removed, local LSA is incremented, and the change is flooded.
+- Explicit disconnect signaling: `disconnect` and `quit` use type-2 DISCONNECT packets so peers tear down mirrored links promptly.
 - Dijkstra (for `detect` and `send` next-hop): shortest path is computed over weighted links using a priority queue, distance map, and parent map (weight-based, not hop-count based).
 - Path rendering for `detect`: output includes per-edge weights in the displayed path (e.g., `A -> (w) B -> (w) C`).
 - send forwards application messages hop-by-hop: intermediate routers log forwarding, and the destination logs the received message.

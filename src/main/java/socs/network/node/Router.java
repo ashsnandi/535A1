@@ -28,7 +28,7 @@ public class Router {
 
   private BufferedReader inputReader = new BufferedReader(new InputStreamReader(System.in));
 
-  // Background threads enqueue attach requests here; terminal thread prompts Y/N to avoid stdin races
+  // Background threads enqueue attach requests here; terminal thread prompts Y/N.
   private ConcurrentLinkedQueue<PendingRequest> pendingRequests = new ConcurrentLinkedQueue<>();
 
   private static class PendingRequest {
@@ -36,7 +36,7 @@ public class Router {
     Socket socket;
     ObjectOutputStream out;
     boolean approved;
-    CountDownLatch latch = new CountDownLatch(1); 
+    CountDownLatch latch = new CountDownLatch(1);
 
     PendingRequest(SOSPFPacket helloMsg, Socket socket, ObjectOutputStream out) {
       this.helloMsg = helloMsg;
@@ -123,7 +123,7 @@ public class Router {
    * <p/>
    * NOTE: this command should not trigger link database synchronization
    */
-  private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {   
+  private void processAttach(String processIP, short processPort, String simulatedIP, short weight) {
     if (weight <= 0) {
       System.out.println("Invalid weight (must be > 0): " + weight);
       return;
@@ -134,14 +134,14 @@ public class Router {
       return;
     }
 
-    int port_slot = -1;
+    int portSlot = -1;
     for (int i = 0; i < ports.length; i++) {
       if (ports[i] == null) {
-        port_slot = i;
+        portSlot = i;
         break;
       }
     }
-    if (port_slot == -1) {
+    if (portSlot == -1) {
       System.err.println("All ports are full.");
       return;
     }
@@ -166,8 +166,8 @@ public class Router {
         rd1.simulatedIPAddress = simulatedIP;
         rd1.status = RouterStatus.INIT;
         System.out.println("set " + simulatedIP + " STATE to INIT;");
-        Link newLink = new Link(rd, rd1, port_slot, weight);
-        ports[port_slot] = newLink;
+        Link newLink = new Link(rd, rd1, portSlot, weight);
+        ports[portSlot] = newLink;
         System.out.println("successfully attached to " + simulatedIP);
       } else {
         System.out.println("Connection rejected by " + simulatedIP);
@@ -216,11 +216,11 @@ public class Router {
         return;
       }
 
-      PendingRequest pRequest = new PendingRequest(hello, s, out);
-      pendingRequests.add(pRequest);
-      pRequest.latch.await();
+      PendingRequest pendingRequest = new PendingRequest(hello, s, out);
+      pendingRequests.add(pendingRequest);
+      pendingRequest.latch.await();
 
-      if (pRequest.approved) {
+      if (pendingRequest.approved) {
         int portSlot = -1;
         synchronized (ports) {
           for (int i = 0; i < ports.length; i++) {
@@ -247,7 +247,7 @@ public class Router {
         rd2.status = RouterStatus.INIT;
         System.out.println("set " + hello.srcIP + " STATE to INIT;");
 
-        int inboundWeight = pRequest.helloMsg.linkWeight > 0 ? pRequest.helloMsg.linkWeight : defaultLinkWeight;
+        int inboundWeight = pendingRequest.helloMsg.linkWeight > 0 ? pendingRequest.helloMsg.linkWeight : defaultLinkWeight;
         Link newLink = new Link(rd, rd2, portSlot, inboundWeight);
 
         synchronized (ports) {
@@ -318,49 +318,10 @@ public class Router {
     out.flush();
   }
 
-  /**
-   * Build and send a HELLO packet to the given neighbor, then transition it to
-   * TWO_WAY if it was previously INIT.  Called during {@link #processStart()}.
-   *
-   * @param nbr the neighbor's description (destination of the HELLO)
-   * @param out the already-open output stream on the socket to {@code nbr}
-   */
-  private void sendHelloToNeighbor(RouterDescription nbr, ObjectOutputStream out) {
-    SOSPFPacket hello = new SOSPFPacket();
-    hello.sospfType = 0; // HELLO
-
-    // inter-process addressing (real socket endpoints)
-    hello.srcProcessIP = rd.processIPAddress;
-    hello.srcProcessPort = rd.processPortNumber;
-
-    // simulated addressing (router IDs)
-    hello.srcIP = rd.simulatedIPAddress;
-    hello.dstIP = nbr.simulatedIPAddress;
-
-    // HELLO semantic: "I am <src simulated IP>"
-    hello.neighborID = rd.simulatedIPAddress;
-
-    sendPacket(hello, nbr, out);
-
-    // Set neighbor status to TWOWAY
-    if (nbr.status == RouterStatus.INIT) {
-      nbr.status = RouterStatus.TWO_WAY;
-      System.out.println("set " + nbr.simulatedIPAddress + " state to TWO_WAY");
-      // Finally update local LSD for this neighbor and trigger synchronization by sending LSA update to all neighbors
-      Link link = findLinkBySimulatedIP(nbr.simulatedIPAddress);
-      if (link != null) {
-        updateLocalLsaForLink(link);
-      }
-    }
-  }
-
-  // Helper function to send the packet to the neighbor as an Object
-  private void sendPacket(SOSPFPacket pakt, RouterDescription nbr, ObjectOutputStream out) {
+  private void sendPacket(SOSPFPacket packet, ObjectOutputStream out) {
     try {
-
-      out.writeObject(pakt);
+      out.writeObject(packet);
       out.flush();
-
     } catch (IOException e) {
       e.printStackTrace();
     }
@@ -462,7 +423,7 @@ public class Router {
 
     try (Socket socket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
       ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
-      sendPacket(pkt, nextHop, out);
+      sendPacket(pkt, out);
     } catch (IOException e) {
       System.err.println("Failed to send application message: " + e.getMessage());
     }
@@ -503,7 +464,7 @@ public class Router {
 
     try (Socket fwdSocket = new Socket(nextHop.processIPAddress, nextHop.processPortNumber);
       ObjectOutputStream fwdOut = new ObjectOutputStream(fwdSocket.getOutputStream())) {
-      sendPacket(packet, nextHop, fwdOut);
+      sendPacket(packet, fwdOut);
     } catch (IOException e) {
       System.err.println("Failed to forward message: " + e.getMessage());
     }
@@ -647,25 +608,21 @@ public class Router {
     if (pendingRequests.isEmpty()) {
       return;
     }
-    PendingRequest pRequest;
-    while ((pRequest = pendingRequests.poll()) != null) {
+    PendingRequest pendingRequest;
+    while ((pendingRequest = pendingRequests.poll()) != null) {
       try {
-        System.out.println("Do you accept this request from " + pRequest.helloMsg.srcIP + "? (Y/N)");
+        System.out.println("Do you accept this request from " + pendingRequest.helloMsg.srcIP + "? (Y/N)");
         String answer = bReader.readLine();
         while (answer != null && !(answer.equalsIgnoreCase("Y") || answer.equalsIgnoreCase("N"))) {
           System.out.println("Answer not accepted/invalid.");
           System.out.println("Do you accept this request? (Y/N)");
           answer = bReader.readLine();
         }
-        if (answer.equalsIgnoreCase("Y")) {
-          pRequest.approved = true;
-        } else {
-          pRequest.approved = false;
-        }
+        pendingRequest.approved = answer != null && answer.equalsIgnoreCase("Y");
       } catch (IOException e) {
-        pRequest.approved = false;
+        pendingRequest.approved = false;
       }
-      pRequest.latch.countDown();
+      pendingRequest.latch.countDown();
     }
   }
 
@@ -741,7 +698,7 @@ public class Router {
     floodLsaUpdate(null);
   }
 
-  // Helper function -> next hop router description on shortest path to the destination IP. uses Link State Database
+  // Returns the next-hop router on the shortest path to destinationIP.
   private RouterDescription getNextHop(String destinationIP) {
     String path = lsd.getShortestPath(destinationIP);
     if (path == null) {
@@ -949,8 +906,30 @@ public class Router {
       disconnect.dstIP = link.router2.simulatedIPAddress;
       out.writeObject(disconnect);
       out.flush();
+      System.out.println("Sent DISCONNECT to " + link.router2.simulatedIPAddress);
     } catch (IOException e) {
       System.err.println("Failed to notify " + link.router2.simulatedIPAddress + " about disconnect");
+    }
+  }
+
+  private void sendDisconnectMirror(SOSPFPacket packet) {
+    if (packet == null || packet.srcIP == null || packet.srcProcessIP == null || packet.srcProcessPort <= 0) {
+      return;
+    }
+
+    try (Socket socket = new Socket(packet.srcProcessIP, packet.srcProcessPort);
+         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream())) {
+      SOSPFPacket mirror = new SOSPFPacket();
+      mirror.sospfType = 2;
+      mirror.srcProcessIP = rd.processIPAddress;
+      mirror.srcProcessPort = rd.processPortNumber;
+      mirror.srcIP = rd.simulatedIPAddress;
+      mirror.dstIP = packet.srcIP;
+      out.writeObject(mirror);
+      out.flush();
+      System.out.println("Mirrored DISCONNECT back to " + packet.srcIP);
+    } catch (IOException e) {
+      System.err.println("Failed to mirror disconnect back to " + packet.srcIP);
     }
   }
 
@@ -960,6 +939,7 @@ public class Router {
     }
 
     String neighborIp = packet.srcIP;
+    System.out.println("Received DISCONNECT from " + neighborIp);
     boolean removedPort = false;
     int removedPortNumber = -1;
 
@@ -976,7 +956,12 @@ public class Router {
 
     boolean removedFromLsa = removeNeighborFromSelfLsa(neighborIp, removedPortNumber);
     if (removedPort || removedFromLsa) {
+      sendDisconnectMirror(packet);
       floodLsaUpdate(neighborIp);
+      System.out.println("Applied DISCONNECT from " + neighborIp + " (removedPort=" + removedPort
+          + ", removedFromLsa=" + removedFromLsa + ")");
+    } else {
+      System.out.println("DISCONNECT from " + neighborIp + " was already applied locally");
     }
   }
 
