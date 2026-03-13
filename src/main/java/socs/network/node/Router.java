@@ -337,8 +337,8 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-    processAttach(processIP, processPort, simulatedIP, weight);
-    processStart();
+    // Scenario: disconnected, and must start again
+    // Then call processUpdate
   }
 
   /**
