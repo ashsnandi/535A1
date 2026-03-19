@@ -23,6 +23,7 @@ public class Router {
   RouterDescription rd = new RouterDescription();
   private final NetworkLayer networkLayer;
   private final int defaultLinkWeight = 1;
+  private volatile boolean started = false;
 
   Link[] ports = new Link[4];
 
@@ -199,6 +200,10 @@ public class Router {
         handleDisconnectPacket(packet);
         return;
       }
+      if (packet.sospfType == 3) {
+        handleConnectPacket(packet, out);
+        return;
+      }
       if (packet.sospfType == 4) {
         handleApplicationMessage(packet, out);
         return;
@@ -272,6 +277,7 @@ public class Router {
   }
 
   private void processStart() {
+    started = true;
     for (Link link : ports) {
       if (link != null) {
         try (Socket socket = new Socket(link.router2.processIPAddress, link.router2.processPortNumber)) {
@@ -337,8 +343,161 @@ public class Router {
    */
   private void processConnect(String processIP, short processPort,
                               String simulatedIP, short weight) {
-    // Scenario: disconnected, and must start again
-    // Then call processUpdate
+    if (weight <= 0) {
+      System.out.println("Invalid weight (must be > 0): " + weight);
+      return;
+    }
+
+    if (!started) {
+      System.out.println("Connect rejected locally: run 'start' before connect.");
+      return;
+    }
+
+    Link existingLink = findLinkBySimulatedIP(simulatedIP);
+
+    int portSlot = -1;
+    if (existingLink == null) {
+      portSlot = findAvailablePortSlot();
+      if (portSlot == -1) {
+        System.err.println("All ports are full.");
+        return;
+      }
+    }
+
+    if (!sendConnectBroadcast(processIP, processPort, simulatedIP, weight)) {
+      return;
+    }
+
+    if (existingLink != null) {
+      existingLink.weight = weight;
+      existingLink.router2.processIPAddress = processIP;
+      existingLink.router2.processPortNumber = processPort;
+      existingLink.router2.status = RouterStatus.TWO_WAY;
+      updateLocalLsaForLink(existingLink);
+    } else {
+      RouterDescription neighbor = new RouterDescription();
+      neighbor.processIPAddress = processIP;
+      neighbor.processPortNumber = processPort;
+      neighbor.simulatedIPAddress = simulatedIP;
+      neighbor.status = RouterStatus.TWO_WAY;
+
+      Link localLink = new Link(rd, neighbor, portSlot, weight);
+      ports[portSlot] = localLink;
+      updateLocalLsaForLink(localLink);
+    }
+
+    System.out.println("Link established with " + simulatedIP);
+    System.out.println("Broadcasting LSAUPDATE.");
+  }
+
+  private SOSPFPacket buildConnectPacket(String processIP, short processPort, String simulatedIP, short weight) {
+    SOSPFPacket connectPacket = new SOSPFPacket();
+    connectPacket.sospfType = 3;
+    connectPacket.srcProcessIP = rd.processIPAddress;
+    connectPacket.srcProcessPort = rd.processPortNumber;
+    connectPacket.srcIP = rd.simulatedIPAddress;
+    connectPacket.dstIP = simulatedIP;
+    connectPacket.neighborID = rd.simulatedIPAddress;
+    connectPacket.linkWeight = weight;
+    return connectPacket;
+  }
+
+  private boolean sendConnectBroadcast(String processIP, short processPort, String simulatedIP, short weight) {
+    try (Socket socket = new Socket(processIP, processPort);
+         ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+         ObjectInputStream in = new ObjectInputStream(socket.getInputStream())) {
+      SOSPFPacket connectPacket = buildConnectPacket(processIP, processPort, simulatedIP, weight);
+      out.writeObject(connectPacket);
+      out.flush();
+
+      SOSPFPacket response = (SOSPFPacket) in.readObject();
+      if (response != null && response.sospfType == 3) {
+        return true;
+      }
+
+      String remoteReason = (response == null || response.message == null || response.message.trim().isEmpty())
+          ? "no reason provided"
+          : response.message;
+      System.out.println("Connect rejected by " + simulatedIP + ": " + remoteReason);
+      return false;
+    } catch (ClassNotFoundException e) {
+      System.err.println("Failed to parse connect response from " + simulatedIP + ": " + e.getMessage());
+      return false;
+    } catch (IOException e) {
+      System.err.println("Failed to connect to " + simulatedIP + ": " + e.getMessage());
+      return false;
+    }
+  }
+
+  private void handleConnectPacket(SOSPFPacket packet, ObjectOutputStream out) {
+    if (packet == null || packet.srcIP == null || packet.srcProcessIP == null || packet.srcProcessPort <= 0) {
+      sendConnectResponse(out, false, "invalid CONNECT packet");
+      return;
+    }
+
+    if (!started) {
+      sendConnectResponse(out, false, "router not started");
+      return;
+    }
+
+    int inboundWeight = packet.linkWeight > 0 ? packet.linkWeight : defaultLinkWeight;
+    Link existing = findLinkBySimulatedIP(packet.srcIP);
+    if (existing != null) {
+      existing.weight = inboundWeight;
+      existing.router2.processIPAddress = packet.srcProcessIP;
+      existing.router2.processPortNumber = packet.srcProcessPort;
+      existing.router2.status = RouterStatus.TWO_WAY;
+      updateLocalLsaForLink(existing);
+      sendConnectResponse(out, true, "OK");
+      System.out.println("Applied CONNECT packet from " + packet.srcIP + " weight=" + inboundWeight);
+      return;
+    }
+
+    int portSlot = findAvailablePortSlot();
+    if (portSlot == -1) {
+      sendConnectResponse(out, false, "no available ports");
+      return;
+    }
+
+    RouterDescription neighbor = new RouterDescription();
+    neighbor.processIPAddress = packet.srcProcessIP;
+    neighbor.processPortNumber = packet.srcProcessPort;
+    neighbor.simulatedIPAddress = packet.srcIP;
+    neighbor.status = RouterStatus.TWO_WAY;
+
+    Link newLink = new Link(rd, neighbor, portSlot, inboundWeight);
+    ports[portSlot] = newLink;
+    updateLocalLsaForLink(newLink);
+    sendConnectResponse(out, true, "OK");
+    System.out.println("Applied CONNECT packet from " + packet.srcIP + " weight=" + inboundWeight);
+  }
+
+  private void sendConnectResponse(ObjectOutputStream out, boolean accepted, String reason) {
+    if (out == null) {
+      return;
+    }
+    try {
+      SOSPFPacket response = new SOSPFPacket();
+      response.sospfType = accepted ? (short) 3 : (short) -1;
+      response.srcProcessIP = rd.processIPAddress;
+      response.srcProcessPort = rd.processPortNumber;
+      response.srcIP = rd.simulatedIPAddress;
+      response.message = reason;
+      out.writeObject(response);
+      out.flush();
+    } catch (IOException e) {
+      System.err.println("Failed to send CONNECT response: " + e.getMessage());
+    }
+  }
+
+  private int findAvailablePortSlot() {
+    for (int i = 0; i < ports.length; i++) {
+      if (ports[i] == null) {
+        return i;
+      }
+    }
+    return -1;
+
   }
 
   /**
@@ -801,8 +960,11 @@ public class Router {
       return;
     }
 
+    System.out.println("Received LSAUPDATE from " + packet.srcIP);
+
     boolean needToFlood = false;
     boolean sourceNeighborDroppedUs = false;
+    boolean updatedDatabase = false;
 
     Vector<socs.network.message.LSA> incomingLsaArray = packet.lsaArray;
     for (socs.network.message.LSA newLsa : incomingLsaArray) {
@@ -815,6 +977,7 @@ public class Router {
       if (current == null || newLsa.lsaSeqNumber > current.lsaSeqNumber) {
         lsd._store.put(newLsa.linkStateID, newLsa);
         needToFlood = true;
+        updatedDatabase = true;
 
         if (packet.srcIP.equals(newLsa.linkStateID)
             && !neighborListsMe(newLsa, rd.simulatedIPAddress)) {
@@ -827,6 +990,7 @@ public class Router {
       boolean mirrored = mirrorNeighborDisconnect(packet.srcIP);
       if (mirrored) {
         needToFlood = true;
+        updatedDatabase = true;
       }
     }
 
@@ -869,6 +1033,7 @@ public class Router {
         currentPort.weight = weightToSelf;
         // Update our local LSA to reflect the new weight from the neighbor's LSA and flood the update to neighbors
         updateLocalLsaForLink(currentPort);
+        updatedDatabase = true;
       }
 
       // Neighbor has effectively disconnected if its latest LSA no longer contains a link back to us.
@@ -892,6 +1057,11 @@ public class Router {
       }
       self.lsaSeqNumber++;
       needToFlood = true;
+      updatedDatabase = true;
+    }
+
+    if (updatedDatabase) {
+      System.out.println("Updating link state database");
     }
 
     // If any LSAs were updated, flood the updates to all TWO_WAY neighbors

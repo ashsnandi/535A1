@@ -20,8 +20,9 @@ start
 	- Floods LSAUPDATE information so Link State Databases synchronize (PA2).
 
 connect [Process IP] [Process Port] [Simulated IP] [Weight]
-	- Convenience command: runs `attach` then `start`.
-	- Effectively establishes the link (if accepted) and immediately triggers HELLO + LSD synchronization.
+	- Behaves like `attach`, but is only allowed after `start` has been executed.
+	- Establishes/updates the link and synchronizes weight via CONNECT control packet (type 3).
+	- On success, updates local LSDB, increments local LSA sequence number, and broadcasts LSAUPDATE.
 
 neighbors
 	- Prints current neighbor simulated IPs from the local LSA.
