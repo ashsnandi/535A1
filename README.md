@@ -50,7 +50,7 @@ Using `send`
 If no route exists in the current Link State Database, the source prints `Path not found`.
 
 disconnect [port_number]
-- handles disconnects implicitly during LSAUPDATE processing in handleLsaUpdate(). if neighbor’s newest LSA no longer lists this router, local router mirrors removal, updates own LSA, floods the change.
+- sends disconnect packet, removes local port/LSA entry, floods update, handleDisconnectPacket() applies mirrored teardown on neighbor's end. Additionally, handles disconnects implicitly during LSAUPDATE processing in handleLsaUpdate(). if neighbor’s newest LSA no longer lists this router, local router mirrors removal, updates own LSA, floods the change.
 
 
 update [port_number] [new_weight] 
