@@ -50,9 +50,11 @@ Using `send`
 If no route exists in the current Link State Database, the source prints `Path not found`.
 
 disconnect [port_number]
-update [port_number] [new_weight]
-	- `disconnect` is implemented and sends a type-2 DISCONNECT packet to the neighbor before removing the local link.
-	- `update` is wired in the CLI but currently a stub.
+- handles disconnects implicitly during LSAUPDATE processing in handleLsaUpdate(). if neighbor’s newest LSA no longer lists this router, local router mirrors removal, updates own LSA, floods the change.
+
+
+update [port_number] [new_weight] 
+- changes weight of link attached at the selected port. validates the port exists and new weight is positive, updates link cost, updates router’s local Link State Advertisement with the new weight, and floods LSAUPDATE so other routers in network get updated weight.
 
 quit
 	- Sends DISCONNECT packets for all active links (same behavior as running `disconnect` on each occupied port), then stops the listener and exits.
@@ -70,3 +72,7 @@ Implementation Details
 - Dijkstra (for `detect` and `send` next-hop): shortest path is computed over weighted links using a priority queue, distance map, and parent map (weight-based, not hop-count based).
 - Path rendering for `detect`: output includes per-edge weights in the displayed path (e.g., `A -> (w) B -> (w) C`).
 - send forwards application messages hop-by-hop: intermediate routers log forwarding, and the destination logs the received message.
+- Weight updates change the local link cost, updates the local LSA to reflect, and then floods the new cost so shortest-path calculations reflect the new weight on other routers
+
+Teamwork Note:
+- Ash and Charlie discussed assignments after every class, and otherwise coordinated over text. Work was split evenly across PA1/2/3. Occasionally one of us would assign ourselves a certain function, but it was largely mixed work even within the implementation of a single function. We both tested everything for every PA, and if we found errors would take it upon ourselves to fix them. Overarching design decisions were largely formulated through texting with each other, especially when debugging required a review of design decisions. This note is signed off on by both Ash and Charlie
