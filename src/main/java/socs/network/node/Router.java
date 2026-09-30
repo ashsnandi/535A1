@@ -268,7 +268,7 @@ public class Router {
         System.out.println("rejected attach request from " + hello.srcIP);
       }
     } catch (IOException | ClassNotFoundException | InterruptedException e) {
-      System.err.println("Error handling request: " + e.getMessage());
+      System.err.println("Error handling request: " + e);
       try {
         socket.close();
       } catch (IOException ignored) {
@@ -1216,7 +1216,6 @@ public class Router {
 
     boolean removedFromLsa = removeNeighborFromSelfLsa(neighborIp, removedPortNumber);
     if (removedPort || removedFromLsa) {
-      sendDisconnectMirror(packet);
       floodLsaUpdate(neighborIp);
       System.out.println("Applied DISCONNECT from " + neighborIp + " (removedPort=" + removedPort
           + ", removedFromLsa=" + removedFromLsa + ")");
