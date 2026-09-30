@@ -39,5 +39,7 @@ launch_router "router1" "conf/router1.conf"
 launch_router "router2" "conf/router2.conf"
 launch_router "router3" "conf/router3.conf"
 launch_router "router4" "conf/router4.conf"
+launch_router "router5" "conf/router5.conf"
+launch_router "router6" "conf/router6.conf"
 
 wait

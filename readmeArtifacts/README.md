@@ -23,14 +23,9 @@ If you don't have these installed, please install them before proceeding.
 To compile the project:
 
 ```bash
-mvn clean compile
+mvn clean assembly:single
 ```
 
-To compile and create a JAR file:
-
-```bash
-mvn clean package
-```
 
 The compiled classes will be in `target/classes/` directory.
 
